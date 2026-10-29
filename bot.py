@@ -1,3 +1,6 @@
+from tickets import setup_tickets
+from voice import setup_voice
+
 from __future__ import annotations
 
 import asyncio
@@ -186,9 +189,10 @@ class SijkBot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.synced = False
 
-    async def setup_hook(self) -> None:
+     async def setup_hook(self) -> None:
         init_db()
         await setup_tickets(self, DB_PATH, config)
+        await setup_voice(self, DB_PATH)
         if DEV_GUILD_ID:
             guild = discord.Object(id=DEV_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
