@@ -91,7 +91,7 @@ class Verification(commands.Cog):
         if guild is None or channel.guild.id != guild.id or role.guild.id != guild.id:
             await interaction.response.send_message('Канал и роль должны быть с этого сервера.', ephemeral=True)
             return
-        if role.is_default() or role.managed() or role.permissions.administrator:
+        if role.is_default() or role.managed or role.permissions.administrator:
             await interaction.response.send_message('Выбери обычную роль участника без административных прав.', ephemeral=True)
             return
         me = guild.me
