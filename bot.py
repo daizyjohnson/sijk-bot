@@ -15,6 +15,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from tickets import setup_tickets
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
@@ -187,6 +188,7 @@ class SijkBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         init_db()
+        await setup_tickets(self, DB_PATH, config)
         if DEV_GUILD_ID:
             guild = discord.Object(id=DEV_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
