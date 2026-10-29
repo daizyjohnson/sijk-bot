@@ -87,7 +87,7 @@ class WelcomeManager(commands.Cog):
             return
         rules_mention = f'<#{row["rules_channel_id"]}>'
         embed = discord.Embed(
-            title="✦ ДОБРО ПОЖАЛОВАТЬ В SIJK SQUAD",
+            title="✦ ДОБРО ПОЖАЛОВАТЬ",
             description=(
                 f"Рады видеть тебя на сервере, {member.mention}! 🩵\n\n"
                 f"Перед началом общения ознакомься с правилами в {rules_mention}. "
