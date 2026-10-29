@@ -110,6 +110,54 @@ class WelcomeManager(commands.Cog):
                         (message.id, channel.id, int(time.time()) + WELCOME_SECONDS))
             con.commit()
 
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        if member.bot:
+            return
+
+        with closing(self.db()) as con:
+            row = con.execute(
+                "SELECT welcome_channel_id FROM welcome_settings WHERE guild_id=?",
+                (member.guild.id,),
+            ).fetchone()
+
+        if row is None:
+            return
+
+        channel = member.guild.get_channel(row["welcome_channel_id"])
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = discord.Embed(
+            title="✦ ТАКТИЧЕСКОЕ ОТСТУПЛЕНИЕ",
+            description=(
+                f"**{discord.utils.escape_markdown(member.display_name)}** "
+                "покинул сервер.\n\n"
+                "Назовём это ротацией."
+            ),
+            color=discord.Color.from_rgb(224, 68, 82),
+        )
+        embed.set_footer(text="SIJK SYSTEM • Goodbye")
+
+        try:
+            message = await channel.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            log.exception("Не удалось отправить уведомление о выходе")
+            return
+
+        with closing(self.db()) as con:
+            con.execute(
+                "INSERT OR REPLACE INTO welcome_pending"
+                "(message_id,channel_id,delete_after) VALUES(?,?,?)",
+                (message.id, channel.id, int(time.time()) + WELCOME_SECONDS),
+            )
+            con.commit()
+
+    
     @tasks.loop(seconds=30)
     async def cleanup(self):
         now = int(time.time())
