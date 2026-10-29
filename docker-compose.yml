@@ -1,0 +1,10 @@
+services:
+  sijk:
+    build: .
+    restart: unless-stopped
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DEV_GUILD_ID: ${DEV_GUILD_ID:-}
+      DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
