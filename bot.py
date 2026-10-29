@@ -1,6 +1,3 @@
-from tickets import setup_tickets
-from voice import setup_voice
-
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +16,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from tickets import setup_tickets
+from voice import setup_voice
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
