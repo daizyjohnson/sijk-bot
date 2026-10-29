@@ -133,7 +133,11 @@ class Notifications(commands.Cog):
             )
             embed.set_image(url=f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg')
             embed.set_footer(text='YOUTUBE • SIJK')
-            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            await channel.send(
+                content="@everyone",
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(everyone=True)
+            )
             self.save_state(guild_id, 'youtube', video_id)
 
     async def twitch_token(self):
