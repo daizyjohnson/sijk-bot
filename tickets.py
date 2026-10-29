@@ -158,6 +158,16 @@ class Tickets(commands.Cog):
                                   (guild.id, interaction.user.id, channel.id, kind))
                 ticket_id = cur.lastrowid
                 con.commit()
+                names = {
+                "complaint": "жалоба",
+                "suggestion": "предложение",
+                "support": "помощь",
+            }
+            prefix = names.get(kind, "тикет")
+            try:
+                await channel.edit(name=f"{prefix}-{ticket_id:04d}")
+            except discord.HTTPException:
+                log.exception("Не удалось переименовать тикет")
             embed = discord.Embed(title=f'Обращение #{ticket_id} · {TYPES[kind]}',
                                   description=details, color=RED)
             embed.add_field(name='Автор', value=interaction.user.mention, inline=False)
