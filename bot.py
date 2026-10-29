@@ -19,6 +19,7 @@ from tickets import setup_tickets
 from voice import setup_voice
 from welcome import setup_welcome
 from verification import setup_verification
+from notifications import setup_notifications
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
@@ -195,6 +196,7 @@ class SijkBot(commands.Bot):
         await setup_voice(self, DB_PATH)
         await setup_welcome(self, DB_PATH)
         await setup_verification(self, DB_PATH)
+        await setup_notifications(self, DB_PATH)
         if DEV_GUILD_ID:
             guild = discord.Object(id=DEV_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
