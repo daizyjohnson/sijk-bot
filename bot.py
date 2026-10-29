@@ -189,7 +189,7 @@ class SijkBot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.synced = False
 
-     async def setup_hook(self) -> None:
+    async def setup_hook(self) -> None:
         init_db()
         await setup_tickets(self, DB_PATH, config)
         await setup_voice(self, DB_PATH)
