@@ -112,16 +112,16 @@ class WelcomeManager(commands.Cog):
 
 
     @commands.Cog.listener()
-async def on_member_remove(self, member: discord.Member):
-    log.info(
-        "LEAVE EVENT: пользователь %s (%s) покинул сервер %s",
-        member.name,
-        member.id,
-        member.guild.name,
-    )
+    async def on_member_remove(self, member: discord.Member):
+        log.info(
+            "LEAVE EVENT: пользователь %s (%s) покинул сервер %s",
+            member.name,
+            member.id,
+            member.guild.name,
+        )
 
-    if member.bot:
-        return
+        if member.bot:
+            return
 
         with closing(self.db()) as con:
             row = con.execute(
