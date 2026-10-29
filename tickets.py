@@ -40,12 +40,12 @@ class TicketPanel(discord.ui.View):
     async def complaint(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(TicketModal(self.cog, 'complaint'))
 
-    @discord.ui.button(label='Предложение', emoji='💡', style=discord.ButtonStyle.secondary,
+    @discord.ui.button(label='Предложение', emoji='💡', style=discord.ButtonStyle.success,
                        custom_id='sijk:ticket:suggestion')
     async def suggestion(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(TicketModal(self.cog, 'suggestion'))
 
-    @discord.ui.button(label='Администрация', emoji='💬', style=discord.ButtonStyle.secondary,
+    @discord.ui.button(label='Администрация', emoji='💬', style=discord.ButtonStyle.primary,
                        custom_id='sijk:ticket:support')
     async def support(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(TicketModal(self.cog, 'support'))
