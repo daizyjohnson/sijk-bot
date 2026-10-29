@@ -203,7 +203,7 @@ bot = SijkBot()
 @bot.event
 async def on_ready() -> None:
     log.info("Бот запущен как %s (%s)", bot.user, bot.user.id if bot.user else "?")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="за сервером sijk"))
+     await bot.change_presence(activity=discord.CustomActivity(name="✦ Бот-сиджик"))
 
 
 @bot.event
