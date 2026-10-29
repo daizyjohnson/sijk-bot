@@ -140,67 +140,82 @@ class Notifications(commands.Cog):
             )
             self.save_state(guild_id, 'youtube', video_id)
 
-    async def twitch_token(self):
-        client_id = os.getenv('TWITCH_CLIENT_ID', '').strip()
-        secret = os.getenv('TWITCH_CLIENT_SECRET', '').strip()
-        if not client_id or not secret:
-            return None
-        if self.access_token and time.time() < self.token_expires - 120:
-            return self.access_token
-        session = await self.http()
-        async with session.post('https://id.twitch.tv/oauth2/token', data={
-            'client_id': client_id, 'client_secret': secret,
-            'grant_type': 'client_credentials',
-        }) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-        self.access_token = data['access_token']
-        self.token_expires = time.time() + data.get('expires_in', 3600)
-        return self.access_token
-
+    
     async def check_twitch(self, row, channel: discord.TextChannel):
-        token = await self.twitch_token()
-        if not token:
-            return
         login = row['twitch_login']
         session = await self.http()
-        async with session.get('https://api.twitch.tv/helix/streams',
-                               params={'user_login': login}, headers={
-                                   'Client-ID': os.environ['TWITCH_CLIENT_ID'],
-                                   'Authorization': f'Bearer {token}',
-                               }) as resp:
+
+        async with session.get(
+            f'https://decapi.me/twitch/uptime/{login}',
+            params={'offline_msg': 'OFFLINE'}
+        ) as resp:
             resp.raise_for_status()
-            payload = await resp.json()
-        stream = next(iter(payload.get('data', [])), None)
-        current = stream['id'] if stream else 'offline'
-        previous = self.state(row['guild_id'], 'twitch')
+            status = (await resp.text()).strip()
+
+        current = 'offline' if not status or status.upper() == 'OFFLINE' else 'live'
+        guild_id = row['guild_id']
+        previous = self.state(guild_id, 'twitch')
+
         if previous is None:
-            self.save_state(row['guild_id'], 'twitch', current)
+            self.save_state(guild_id, 'twitch', current)
             return
+
         if current == 'offline':
             if previous != 'offline':
-                self.save_state(row['guild_id'], 'twitch', 'offline')
+                self.save_state(guild_id, 'twitch', 'offline')
             return
-        if current == previous:
+
+        if previous == 'live':
             return
+
+        async with session.get(
+            f'https://decapi.me/twitch/title/{login}'
+        ) as resp:
+            resp.raise_for_status()
+            title = (await resp.text()).strip()
+
+        async with session.get(
+            f'https://decapi.me/twitch/game/{login}'
+        ) as resp:
+            resp.raise_for_status()
+            game = (await resp.text()).strip()
+
         url = f'https://www.twitch.tv/{login}'
+
         embed = discord.Embed(
-            title='✦ SIJK В ЭФИРЕ', url=url,
-            description=f'**{discord.utils.escape_markdown(stream.get("title", "Стрим начался")[:250])}**\n\nЗалетай смотреть! 💜',
+            title='✦ SIJK В ЭФИРЕ',
+            url=url,
+            description=(
+                f'**{discord.utils.escape_markdown(title[:250] or "Стрим начался")}**'
+                '\n\nЗалетай смотреть! 💜'
+            ),
             color=TWITCH_COLOR,
         )
-        if stream.get('game_name'):
-            embed.add_field(name='Категория', value=stream['game_name'][:100], inline=False)
-        thumb = stream.get('thumbnail_url', '').replace('{width}', '1280').replace('{height}', '720')
-        if thumb.startswith('https://'):
-            embed.set_image(url=thumb + ('&' if '?' in thumb else '?') + f't={int(time.time())}')
-        embed.set_footer(text='TWITCH • SIJK')
-        await channel.send(
-            content="@everyone",
-            embed=embed,
-            allowed_mentions=discord.AllowedMentions(everyone=True)
+
+        if game:
+            embed.add_field(
+                name='Категория',
+                value=game[:100],
+                inline=False,
+            )
+
+        embed.set_image(
+            url=(
+                f'https://static-cdn.jtvnw.net/previews-ttv/'
+                f'live_user_{login}-1280x720.jpg'
+                f'?t={int(time.time())}'
+            )
         )
-        self.save_state(row['guild_id'], 'twitch', current)
+        embed.set_footer(text='TWITCH • SIJK')
+
+        await channel.send(
+            content='@everyone',
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(everyone=True),
+        )
+
+        self.save_state(guild_id, 'twitch', 'live')
+
 
     @tasks.loop(minutes=3)
     async def poll(self):
