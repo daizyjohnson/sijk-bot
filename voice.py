@@ -54,7 +54,7 @@ class RoomControls(discord.ui.View):
 
 
 class RenameModal(discord.ui.Modal, title='Название комнаты'):
-    name = discord.ui.TextInput(label='Новое название', min_length=1, max_length=80, placeholder='Например, Valorant | Пати')
+    name = discord.ui.TextInput(label='Новое название', min_length=1, max_length=80, placeholder='seuchas poigraem')
 
     def __init__(self, manager: 'VoiceRooms'):
         super().__init__()
