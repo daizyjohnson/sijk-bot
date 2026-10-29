@@ -195,7 +195,11 @@ class Notifications(commands.Cog):
         if thumb.startswith('https://'):
             embed.set_image(url=thumb + ('&' if '?' in thumb else '?') + f't={int(time.time())}')
         embed.set_footer(text='TWITCH • SIJK')
-        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await channel.send(
+            content="@everyone",
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(everyone=True)
+        )
         self.save_state(row['guild_id'], 'twitch', current)
 
     @tasks.loop(minutes=3)
