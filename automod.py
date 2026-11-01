@@ -94,7 +94,7 @@ class AutoMod(commands.Cog):
             return
         # One notification per user/rule every 60s, except raid alerts (already 5m limited).
         now = time.monotonic()
-        cooldown_key = (guild.id, member.id, rule)
+        cooldown_key = (guild.id, member.id, 'spam' if ('флуд' in rule.lower() or 'Повторяющиеся сообщения' in rule) else rule)
         if not rule.startswith('Возможный рейд'):
             if now - self.log_cooldowns.get(cooldown_key, -1e12) < 60:
                 return
@@ -163,11 +163,23 @@ class AutoMod(commands.Cog):
             while recent and now - recent[0][0] > 30:
                 recent.popleft()
             normalized = ' '.join(content.casefold().split())
-            if len(normalized) >= 8 and sum(1 for ts, txt, att in recent if txt == normalized and now-ts <= 30) >= 2:
+            # Rate-based flood: count every message, including one-character messages.
+            if sum(1 for ts, txt, att in recent if now - ts <= 8) >= 5:
+                reasons.append('Быстрый флуд (6 сообщений за 8 секунд)')
+            # Repeated text: three matching messages in 30 seconds, even 'f' or '+'.
+            if normalized and sum(
+                1 for ts, txt, att in recent
+                if txt == normalized and now - ts <= 30
+            ) >= 2:
                 reasons.append('Повторяющиеся сообщения')
-            if message.attachments and sum(1 for ts, txt, att in recent if att and now-ts <= 20) >= 3:
+            if message.attachments and sum(
+                1 for ts, txt, att in recent if att and now - ts <= 20
+            ) >= 3:
                 reasons.append('Спам вложениями')
             recent.append((now, normalized, bool(message.attachments)))
+            # A per-user cap also bounds memory if one account floods extremely fast.
+            while len(recent) > 40:
+                recent.popleft()
         if not reasons:
             return
         reason = ', '.join(reasons)
