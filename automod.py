@@ -16,6 +16,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from moderation import setup_moderation
+
 log = logging.getLogger('sijk.automod')
 URL_RE = re.compile(r'https?://[^\s<>]+', re.I)
 INVITE_RE = re.compile(r'(?:discord\.gg|discord(?:app)?\.com/invite)/[\w-]+', re.I)
@@ -120,6 +122,37 @@ class AutoMod(commands.Cog):
                 await target.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             log.exception('Не удалось отправить лог автомодерации')
+
+    async def notify_member(self, channel, member, reason, duration):
+        """Show one short-lived public notice per moderation episode."""
+        if duration:
+            description = (
+                f'{member.mention}, твои сообщения нарушают правила сервера.\n'
+                f'**Причина:** {reason}\n'
+                f'**Наказание:** тайм-аут на {duration} мин.\n'
+                'Пожалуйста, не повторяй нарушение.'
+            )
+        else:
+            description = (
+                f'{member.mention}, твои сообщения нарушают правила сервера.\n'
+                f'**Причина:** {reason}\n'
+                '**Предупреждение:** сообщение удалено. При повторном нарушении '
+                'возможен тайм-аут.'
+            )
+        embed = discord.Embed(
+            title='⚠️ SIJK SYSTEM | ПРЕДУПРЕЖДЕНИЕ',
+            description=description,
+            color=discord.Color.orange() if not duration else discord.Color.red(),
+        )
+        embed.set_footer(text='Это уведомление исчезнет через 15 секунд')
+        try:
+            await channel.send(
+                embed=embed,
+                delete_after=15,
+                allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            log.warning('Не удалось отправить предупреждение в канал %s', channel.id)
 
     def exempt(self, member):
         return (member.bot or member.id == member.guild.owner_id or member.guild_permissions.administrator or
@@ -227,6 +260,10 @@ class AutoMod(commands.Cog):
                 try:
                     await message.author.timeout(timedelta(minutes=duration), reason=f'SIJK AutoMod: {reason}')
                     action += f'; тайм-аут {duration} мин'
+                    try:
+                        await message.author.send(embed=discord.Embed(title='✦ SIJK SYSTEM | ТАЙМ-АУТ', description=f'Сервер: **{message.guild.name}**\n**Причина:** {reason}\n**Срок:** {duration} мин.', color=discord.Color.orange()))
+                    except discord.HTTPException:
+                        pass
                 except discord.HTTPException:
                     action += '; тайм-аут не удался'
             else:
@@ -238,6 +275,7 @@ class AutoMod(commands.Cog):
             )
             con.commit()
         await self.record(message.guild, message.author, channel, reason, action, settings)
+        await self.notify_member(channel, message.author, reason, duration if "тайм-аут " in action else 0)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -335,3 +373,4 @@ class AutoMod(commands.Cog):
 
 async def setup_automod(bot: commands.Bot, db_path: Path):
     await bot.add_cog(AutoMod(bot, db_path))
+    await setup_moderation(bot, db_path)
