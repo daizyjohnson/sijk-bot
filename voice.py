@@ -130,6 +130,13 @@ class VoiceRooms(commands.Cog):
                     guild_id INTEGER PRIMARY KEY, trigger_id INTEGER NOT NULL,
                     category_id INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS academy_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    trigger_id INTEGER NOT NULL,
+                    category_id INTEGER NOT NULL,
+                    student_role_id INTEGER NOT NULL,
+                    moderator_role_id INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS voice_rooms (
                     channel_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL,
                     owner_id INTEGER NOT NULL
