@@ -200,7 +200,6 @@ class SijkBot(commands.Bot):
         await setup_verification(self, DB_PATH)
         await setup_notifications(self, DB_PATH)
         await setup_automod(self, DB_PATH)
-        await setup_telegram(self, DB_PATH)
         if DEV_GUILD_ID:
             guild = discord.Object(id=DEV_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
