@@ -21,6 +21,7 @@ from welcome import setup_welcome
 from verification import setup_verification
 from notifications import setup_notifications
 from automod import setup_automod
+from telegram_bridge import setup_telegram
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
@@ -199,6 +200,7 @@ class SijkBot(commands.Bot):
         await setup_verification(self, DB_PATH)
         await setup_notifications(self, DB_PATH)
         await setup_automod(self, DB_PATH)
+        await setup_telegram(self, DB_PATH)
         if DEV_GUILD_ID:
             guild = discord.Object(id=DEV_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
