@@ -35,6 +35,8 @@ class AutoMod(commands.Cog):
         self.log_gate = asyncio.Semaphore(2)
         self.last_cleanup = time.monotonic()
         self.max_recent_users = 5000
+        self.episode_cooldown = 60
+        self.episode_last = {}
         with closing(self.db()) as con:
             con.executescript('''
             CREATE TABLE IF NOT EXISTS automod_settings (
@@ -44,6 +46,13 @@ class AutoMod(commands.Cog):
                 mod_log_channel_id INTEGER,
                 raid_until INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS automod_strikes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                rule TEXT NOT NULL, action TEXT NOT NULL, created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_automod_strikes_user_time
+                ON automod_strikes(guild_id, user_id, created_at);
             CREATE TABLE IF NOT EXISTS automod_exclusions (
                 guild_id INTEGER NOT NULL,
                 channel_id INTEGER NOT NULL,
@@ -152,6 +161,7 @@ class AutoMod(commands.Cog):
                     self.last_seen.pop(k, None)
                     self.recent.pop(k, None)
                 self.log_cooldowns = {k: t for k, t in self.log_cooldowns.items() if now - t < 120}
+                self.episode_last = {k: t for k, t in self.episode_last.items() if now - t < 120}
                 self.last_cleanup = now
             # A hard cap prevents unbounded memory growth during large raids.
             if len(self.recent) > self.max_recent_users:
@@ -186,22 +196,47 @@ class AutoMod(commands.Cog):
         if settings['test_mode']:
             await self.record(message.guild, message.author, channel, reason, 'Тест: без наказания', settings)
             return
+        # One strike per user per 60-second episode.
+        async with self.lock:
+            episode_key = (message.guild.id, message.author.id)
+            now = time.monotonic()
+            new_episode = now - self.episode_last.get(episode_key, -1e12) >= self.episode_cooldown
+            if new_episode:
+                self.episode_last[episode_key] = now
+        if not new_episode:
+            try:
+                await message.delete(reason=f'SIJK AutoMod: продолжение эпизода: {reason}')
+            except discord.HTTPException:
+                pass
+            return
+
+        with closing(self.db()) as con:
+            count = con.execute(
+                'SELECT COUNT(*) FROM automod_strikes WHERE guild_id=? AND user_id=? AND created_at>=?',
+                (message.guild.id, message.author.id, int(time.time()) - 86400)
+            ).fetchone()[0]
+        duration = (0, 5, 30, 120)[min(count, 3)]
         try:
             await message.delete(reason=f'SIJK AutoMod: {reason}')
-            action = 'Сообщение удалено'
+            action = 'Сообщение удалено; предупреждение'
         except discord.HTTPException:
-            action = 'Не удалось удалить сообщение'
+            action = 'Предупреждение; не удалось удалить сообщение'
+        if duration:
+            me = message.guild.me
+            if me and me.guild_permissions.moderate_members and me.top_role > message.author.top_role:
+                try:
+                    await message.author.timeout(timedelta(minutes=duration), reason=f'SIJK AutoMod: {reason}')
+                    action += f'; тайм-аут {duration} мин'
+                except discord.HTTPException:
+                    action += '; тайм-аут не удался'
+            else:
+                action += '; нет прав на тайм-аут'
         with closing(self.db()) as con:
-            count = con.execute('SELECT COUNT(*) FROM automod_events WHERE guild_id=? AND user_id=? AND created_at>=? AND action NOT LIKE ?',
-                                (message.guild.id, message.author.id, int(time.time())-86400, 'Тест:%')).fetchone()[0]
-        # 1st: remove; 2nd: 5 min; 3rd: 30 min; 4th+: 2h. No auto-ban.
-        duration = 0 if count == 0 else (5 if count == 1 else (30 if count == 2 else 120))
-        if duration and message.guild.me and message.guild.me.guild_permissions.moderate_members and message.guild.me.top_role > message.author.top_role:
-            try:
-                await message.author.timeout(timedelta(minutes=duration), reason=f'SIJK AutoMod: {reason}')
-                action += f'; тайм-аут {duration} мин'
-            except discord.HTTPException:
-                action += '; тайм-аут не удался'
+            con.execute(
+                'INSERT INTO automod_strikes(guild_id,user_id,rule,action,created_at) VALUES (?,?,?,?,?)',
+                (message.guild.id, message.author.id, reason, action, int(time.time()))
+            )
+            con.commit()
         await self.record(message.guild, message.author, channel, reason, action, settings)
 
     @commands.Cog.listener()
