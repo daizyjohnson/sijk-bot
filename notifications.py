@@ -127,15 +127,26 @@ class Notifications(commands.Cog):
         for video_id, title in unseen:
             url = f'https://www.youtube.com/watch?v={video_id}'
             embed = discord.Embed(
-                title='✦ НОВОЕ ВИДЕО', url=url,
-                description=f'**{discord.utils.escape_markdown(title[:250])}**\n\nСвежий ролик от SIJK уже на YouTube! ❤️',
+                title='▶️ SIJK SYSTEM | НОВОЕ ВИДЕО',
+                url=url,
+                description=(
+                    f'**{discord.utils.escape_markdown(title[:250])}**'
+                    '\n\nСвежий ролик от SIJK уже на YouTube! ❤️'
+                ),
                 color=YOUTUBE_COLOR,
             )
-            embed.set_image(url=f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg')
-            embed.set_footer(text='YOUTUBE • SIJK')
+
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                label='Смотреть на YouTube',
+                style=discord.ButtonStyle.link,
+                url=url
+            ))
+
             await channel.send(
-                content="❤️ **У SIJK вышло новое видео!** Смотри первым! @everyone",
+                content='❤️ **У SIJK вышло новое видео!** Смотри первым! @everyone',
                 embed=embed,
+                view=view,
                 allowed_mentions=discord.AllowedMentions(everyone=True)
             )
             self.save_state(guild_id, 'youtube', video_id)
