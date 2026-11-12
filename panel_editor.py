@@ -84,6 +84,58 @@ class PanelEditor(commands.Cog):
         return bool(interaction.guild and isinstance(interaction.user, discord.Member)
                     and interaction.user.guild_permissions.administrator)
 
+    @app_commands.command(name='panel_new', description='Создать новую статичную плашку SIJK SYSTEM')
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(name='Название панели в редакторе (необязательно)')
+    async def panel_new(self, interaction: discord.Interaction, name: str = 'Новая панель'):
+        if not self.is_admin(interaction):
+            await interaction.response.send_message('Только для администраторов.', ephemeral=True)
+            return
+        name = name.strip()
+        if not 1 <= len(name) <= 80:
+            await interaction.response.send_message('Название должно быть от 1 до 80 символов.', ephemeral=True)
+            return
+        channel = interaction.channel
+        if interaction.guild is None or not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message('Используй команду в текстовом канале сервера.', ephemeral=True)
+            return
+        me = interaction.guild.me
+        if me is None or not (channel.permissions_for(me).send_messages and
+                              channel.permissions_for(me).embed_links):
+            await interaction.response.send_message(
+                'Боту нужны разрешения «Отправлять сообщения» и «Встраивать ссылки».', ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = discord.Embed(
+            title='✦ НОВАЯ ПАНЕЛЬ',
+            description='Здесь будет текст твоей панели. Открой редактор, чтобы изменить оформление и содержание.',
+            color=discord.Color(0xF5A623),
+        )
+        embed.set_footer(text='SIJK SYSTEM • Новая панель')
+        try:
+            msg = await channel.send(embed=embed)
+        except discord.HTTPException:
+            await interaction.followup.send('Не удалось отправить Embed. Проверь права бота.', ephemeral=True)
+            return
+        try:
+            with closing(sqlite3.connect(self.db_path)) as db:
+                db.execute('''INSERT INTO panel_editor_registry(guild_id,message_id,channel_id,label)
+                    VALUES(?,?,?,?)''', (interaction.guild.id, msg.id, channel.id, name))
+                db.commit()
+        except sqlite3.Error:
+            log.exception('Could not register new panel')
+            try:
+                await msg.delete()
+            except discord.HTTPException:
+                log.exception('Could not remove unregistered panel message')
+            await interaction.followup.send('Не удалось зарегистрировать панель. Попробуй ещё раз.', ephemeral=True)
+            return
+        await interaction.followup.send(
+            f'✅ Плашка **{discord.utils.escape_markdown(name)}** создана: {msg.jump_url}\n'
+            'Чтобы изменить её, используй `/panel_edit` и вставь ссылку на сообщение.',
+            ephemeral=True,
+        )
+
     @app_commands.command(name='panel_add', description='Добавить статичную плашку SIJK SYSTEM в редактор')
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(link='Ссылка на сообщение бота', name='Название для списка редактора')
@@ -117,7 +169,7 @@ class PanelEditor(commands.Cog):
             rows = db.execute('SELECT label,channel_id,message_id FROM panel_editor_registry WHERE guild_id=? ORDER BY label LIMIT 30',
                               (interaction.guild.id,)).fetchall()
         if not rows:
-            content = 'Плашек пока нет. Добавь первую через `/panel_add`.'
+            content = 'Плашек пока нет. Создай первую через `/panel_new` или добавь существующую через `/panel_add`.'
         else:
             content = '\n'.join(f'• **{discord.utils.escape_markdown(label)}** — https://discord.com/channels/{interaction.guild.id}/{cid}/{mid}'
                                 for label, cid, mid in rows)
