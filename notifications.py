@@ -18,6 +18,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from notify_roles import notify_mention
 
 log = logging.getLogger('sijk.notifications')
 ATOM = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
@@ -143,11 +144,16 @@ class Notifications(commands.Cog):
                 url=url
             ))
 
+            mention = notify_mention(self.db_path, channel.guild, 'youtube')
+
             await channel.send(
-                content='❤️ **У SIJK вышло новое видео!** Смотри первым! @everyone',
+                content=f'❤️ **У SIJK вышло новое видео!** {mention}'.strip(),
                 embed=embed,
                 view=view,
-                allowed_mentions=discord.AllowedMentions(everyone=True)
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True,
+                    everyone=False
+                )
             )
             self.save_state(guild_id, 'youtube', video_id)
 
@@ -204,11 +210,16 @@ class Notifications(commands.Cog):
             url=url
         ))
 
+       mention = notify_mention(self.db_path, channel.guild, 'twitch')
+
         await channel.send(
-            content='🔴 **SIJK уже в эфире!** Залетай на стрим 💜 @everyone',
+            content=f'🔴 **SIJK уже в эфире!** Залетай на стрим 💜 {mention}'.strip(),
             embed=embed,
             view=view,
-            allowed_mentions=discord.AllowedMentions(everyone=True),
+            allowed_mentions=discord.AllowedMentions(
+                roles=True,
+                everyone=False
+            )
         )
 
         self.save_state(guild_id, 'twitch', 'live')
