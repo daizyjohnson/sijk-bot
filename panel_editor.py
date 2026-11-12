@@ -43,6 +43,9 @@ class PanelEditor(commands.Cog):
                 guild_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
                 embed_json TEXT NOT NULL, editor_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(panel_editor_history)')}
+            if 'embed_index' not in columns:
+                db.execute('ALTER TABLE panel_editor_history ADD COLUMN embed_index INTEGER NOT NULL DEFAULT 0')
             db.commit()
 
     def registered(self, guild_id: int, message_id: int) -> bool:
@@ -50,10 +53,10 @@ class PanelEditor(commands.Cog):
             return db.execute('SELECT 1 FROM panel_editor_registry WHERE guild_id=? AND message_id=?',
                               (guild_id, message_id)).fetchone() is not None
 
-    def save_version(self, guild_id: int, message_id: int, embed: discord.Embed, editor_id: int):
+    def save_version(self, guild_id: int, message_id: int, embed: discord.Embed, editor_id: int, embed_index: int = 0):
         with closing(sqlite3.connect(self.db_path)) as db:
-            db.execute('INSERT INTO panel_editor_history (guild_id,message_id,embed_json,editor_id) VALUES (?,?,?,?)',
-                       (guild_id, message_id, pack(embed), editor_id))
+            db.execute('INSERT INTO panel_editor_history (guild_id,message_id,embed_json,editor_id,embed_index) VALUES (?,?,?,?,?)',
+                       (guild_id, message_id, pack(embed), editor_id, embed_index))
             db.execute('''DELETE FROM panel_editor_history WHERE guild_id=? AND message_id=? AND id NOT IN (
                 SELECT id FROM panel_editor_history WHERE guild_id=? AND message_id=? ORDER BY id DESC LIMIT ?)''',
                 (guild_id, message_id, guild_id, message_id, MAX_HISTORY))
@@ -75,8 +78,8 @@ class PanelEditor(commands.Cog):
             raise ValueError('Не удалось получить сообщение. Проверь ссылку и права бота.') from exc
         if not self.bot.user or message.author.id != self.bot.user.id:
             raise ValueError('Редактировать можно только сообщения SIJK SYSTEM.')
-        if len(message.embeds) != 1:
-            raise ValueError('Редактор поддерживает сообщения ровно с одним Embed.')
+        if not message.embeds:
+            raise ValueError('В сообщении нет Embed для редактирования.')
         return message
 
     @staticmethod
@@ -204,7 +207,7 @@ class PanelEditor(commands.Cog):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         with closing(sqlite3.connect(self.db_path)) as db:
-            rows = db.execute('''SELECT id,created_at,embed_json FROM panel_editor_history
+            rows = db.execute('''SELECT id,created_at,embed_json,embed_index FROM panel_editor_history
                 WHERE guild_id=? AND message_id=? ORDER BY id DESC LIMIT 20''',
                 (interaction.guild.id, msg.id)).fetchall()
         if not rows:
@@ -245,11 +248,30 @@ class EditorModal(discord.ui.Modal, title='Редактирование плаш
         await interaction.response.edit_message(embed=draft, view=self.editor)
 
 
+class EmbedSelector(discord.ui.Select):
+    def __init__(self, editor: 'EditorView'):
+        self.editor = editor
+        super().__init__(placeholder='Выбери Embed для редактирования', min_values=1, max_values=1,
+                         options=[discord.SelectOption(label=f'{i + 1}. {short(embed.title, 65)}', value=str(i))
+                                  for i, embed in enumerate(editor.message.embeds[:10])])
+
+    async def callback(self, interaction: discord.Interaction):
+        self.editor.embed_index = int(self.values[0])
+        self.editor.draft = self.editor.message.embeds[self.editor.embed_index].copy()
+        await interaction.response.edit_message(
+            content=f'**Редактор SIJK SYSTEM**\nВыбрана плашка №{self.editor.embed_index + 1}. '
+                    'Изменения применяются после «Сохранить».',
+            embed=self.editor.draft, view=self.editor)
+
+
 class EditorView(discord.ui.View):
     def __init__(self, cog: PanelEditor, owner_id: int, message: discord.Message):
         super().__init__(timeout=600)
         self.cog, self.owner_id, self.message = cog, owner_id, message
+        self.embed_index = 0
         self.draft = message.embeds[0].copy()
+        if len(message.embeds) > 1:
+            self.add_item(EmbedSelector(self))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id or not self.cog.is_admin(interaction):
@@ -266,18 +288,21 @@ class EditorView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             current = await self.message.channel.fetch_message(self.message.id)
-            if not current.embeds or not self.cog.bot.user or current.author.id != self.cog.bot.user.id:
+            if not self.cog.bot.user or current.author.id != self.cog.bot.user.id or len(current.embeds) <= self.embed_index:
                 raise ValueError('Сообщение изменено или удалено')
-            # Editing only embeds leaves the message components untouched.
-            await current.edit(embed=self.draft)
+            # Preserve every other Embed and all existing message components.
+            embeds = [embed.copy() for embed in current.embeds]
+            previous = embeds[self.embed_index].copy()
+            embeds[self.embed_index] = self.draft
+            await current.edit(embeds=embeds)
         except (discord.HTTPException, ValueError):
             await interaction.followup.send('Не удалось сохранить. Проверь права бота и существование сообщения.', ephemeral=True)
             return
-        self.cog.save_version(interaction.guild.id, self.message.id, current.embeds[0], interaction.user.id)
+        self.cog.save_version(interaction.guild.id, self.message.id, previous, interaction.user.id, self.embed_index)
         self.message = current
         for item in self.children:
             item.disabled = True
-        await interaction.edit_original_response(content='✅ Сохранено! Исходное сообщение обновлено, кнопки не затронуты.',
+        await interaction.edit_original_response(content='✅ Сохранено! Изменена только выбранная плашка, остальные Embed и кнопки сохранены.',
                                                  embed=self.draft, view=self)
 
     @discord.ui.button(label='Отмена', style=discord.ButtonStyle.secondary)
@@ -293,7 +318,7 @@ class HistoryView(discord.ui.View):
         self.cog, self.owner_id, self.message, self.rows = cog, owner_id, message, rows
         self.chosen = rows[0]
         selector = discord.ui.Select(placeholder='Выбери версию', options=[
-            discord.SelectOption(label=f'Версия #{row[0]} · {row[1]} UTC', value=str(row[0]),
+            discord.SelectOption(label=f'#{row[0]} · Embed {row[3] + 1} · {row[1]} UTC', value=str(row[0]),
                                  description=short(unpack(row[2]).title)) for row in rows
         ])
         selector.callback = self.select_version
@@ -315,18 +340,22 @@ class HistoryView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             current = await self.message.channel.fetch_message(self.message.id)
-            if not current.embeds or not self.cog.bot.user or current.author.id != self.cog.bot.user.id:
-                await interaction.followup.send('Сообщение не найдено или недоступно.', ephemeral=True)
+            index = self.chosen[3]
+            if not self.cog.bot.user or current.author.id != self.cog.bot.user.id or len(current.embeds) <= index:
+                await interaction.followup.send('Сообщение не найдено или нужной плашки больше нет.', ephemeral=True)
                 return
+            embeds = [embed.copy() for embed in current.embeds]
+            previous = embeds[index].copy()
             restored = unpack(self.chosen[2])
-            await current.edit(embed=restored)
+            embeds[index] = restored
+            await current.edit(embeds=embeds)
         except discord.HTTPException:
             await interaction.followup.send('Не удалось восстановить оформление.', ephemeral=True)
             return
-        self.cog.save_version(interaction.guild.id, self.message.id, current.embeds[0], interaction.user.id)
+        self.cog.save_version(interaction.guild.id, self.message.id, previous, interaction.user.id, index)
         for item in self.children:
             item.disabled = True
-        await interaction.edit_original_response(content='✅ Версия восстановлена. Кнопки и меню сообщения сохранены.',
+        await interaction.edit_original_response(content='✅ Версия восстановлена. Остальные Embed и кнопки сохранены.',
                                                  embed=restored, view=self)
 
 
