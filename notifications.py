@@ -174,16 +174,10 @@ class Notifications(commands.Cog):
             resp.raise_for_status()
             title = (await resp.text()).strip()
 
-        async with session.get(
-            f'https://decapi.me/twitch/game/{login}'
-        ) as resp:
-            resp.raise_for_status()
-            game = (await resp.text()).strip()
-
         url = f'https://www.twitch.tv/{login}'
 
         embed = discord.Embed(
-            title='✦ SIJK В ЭФИРЕ',
+            title='🔴 SIJK SYSTEM | ПРЯМОЙ ЭФИР',
             url=url,
             description=(
                 f'**{discord.utils.escape_markdown(title[:250] or "Стрим начался")}**'
@@ -192,25 +186,17 @@ class Notifications(commands.Cog):
             color=TWITCH_COLOR,
         )
 
-        if game:
-            embed.add_field(
-                name='Категория',
-                value=game[:100],
-                inline=False,
-            )
-
-        embed.set_image(
-            url=(
-                f'https://static-cdn.jtvnw.net/previews-ttv/'
-                f'live_user_{login}-1280x720.jpg'
-                f'?t={int(time.time())}'
-            )
-        )
-        embed.set_footer(text='TWITCH • SIJK')
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(
+            label='Смотреть на Twitch',
+            style=discord.ButtonStyle.link,
+            url=url
+        ))
 
         await channel.send(
             content='🔴 **SIJK уже в эфире!** Залетай на стрим 💜 @everyone',
             embed=embed,
+            view=view,
             allowed_mentions=discord.AllowedMentions(everyone=True),
         )
 
