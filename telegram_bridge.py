@@ -159,7 +159,8 @@ class TelegramBridge(commands.Cog):
         for target in targets:
             guild = self.bot.get_guild(target['guild_id'])
             channel = guild.get_channel(target['discord_channel_id']) if guild else None
-           if isinstance(channel, discord.TextChannel):
+
+            if isinstance(channel, discord.TextChannel):
                 try:
                     mention = notify_mention(
                         Path(self.path), guild, 'telegram'
