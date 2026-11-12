@@ -351,6 +351,12 @@ class VoiceRooms(commands.Cog):
                                     category=category, overwrites=overwrites,
                                     reason=f'Временная {"учебная " if is_academy else ""}комната для {member}',
                                 )
+
+                                await room.edit(
+                                    position=after.channel.position + 1,
+                                    reason='Размещение комнаты под каналом создания'
+                                )
+                                
                                 with closing(self.db()) as con:
                                     con.execute('INSERT INTO voice_rooms(channel_id,guild_id,owner_id) VALUES (?,?,?)', (room.id, member.guild.id, member.id))
                                     con.commit()
