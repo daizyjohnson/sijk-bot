@@ -134,7 +134,7 @@ class Notifications(commands.Cog):
             embed.set_image(url=f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg')
             embed.set_footer(text='YOUTUBE • SIJK')
             await channel.send(
-                content="@everyone",
+                content="❤️ **У SIJK вышло новое видео!** Смотри первым! @everyone",
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions(everyone=True)
             )
@@ -209,7 +209,7 @@ class Notifications(commands.Cog):
         embed.set_footer(text='TWITCH • SIJK')
 
         await channel.send(
-            content='@everyone',
+            content='🔴 **SIJK уже в эфире!** Залетай на стрим 💜 @everyone',
             embed=embed,
             allowed_mentions=discord.AllowedMentions(everyone=True),
         )
