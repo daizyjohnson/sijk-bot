@@ -210,7 +210,7 @@ class Notifications(commands.Cog):
             url=url
         ))
 
-       mention = notify_mention(self.db_path, channel.guild, 'twitch')
+        mention = notify_mention(self.db_path, channel.guild, 'twitch')
 
         await channel.send(
             content=f'🔴 **SIJK уже в эфире!** Залетай на стрим 💜 {mention}'.strip(),
