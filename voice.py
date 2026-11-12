@@ -333,7 +333,7 @@ class VoiceRooms(commands.Cog):
                                 log.exception('Не удалось отключить пользователя без доступа к академии')
                         else:
                             try:
-                                overwrites = None
+                                overwrites = {}
                                 if is_academy:
                                     student = member.guild.get_role(academy['student_role_id'])
                                     moderator = member.guild.get_role(academy['moderator_role_id'])
