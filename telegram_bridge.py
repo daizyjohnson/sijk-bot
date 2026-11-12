@@ -11,6 +11,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
+from notify_roles import notify_mention
 
 log = logging.getLogger('sijk.telegram')
 
@@ -158,11 +159,23 @@ class TelegramBridge(commands.Cog):
         for target in targets:
             guild = self.bot.get_guild(target['guild_id'])
             channel = guild.get_channel(target['discord_channel_id']) if guild else None
-            if isinstance(channel, discord.TextChannel):
+           if isinstance(channel, discord.TextChannel):
                 try:
-                    await channel.send(embed=embed, view=view,
-                                       allowed_mentions=discord.AllowedMentions.none())
+                    mention = notify_mention(
+                        Path(self.path), guild, 'telegram'
+                    )
+
+                    await channel.send(
+                        content=f'✈️ **Новый пост в Telegram!** {mention}'.strip(),
+                        embed=embed,
+                        view=view,
+                        allowed_mentions=discord.AllowedMentions(
+                            roles=True,
+                            everyone=False
+                        )
+                    )
                     success = True
+
                 except discord.HTTPException:
                     log.exception('Не удалось отправить Telegram-пост')
         if success:
