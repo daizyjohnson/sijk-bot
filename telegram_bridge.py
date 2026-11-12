@@ -135,14 +135,25 @@ class TelegramBridge(commands.Cog):
         title = body.splitlines()[0][:180] if body else 'Новая публикация'
         preview = body[:550] if body else 'В Telegram-канале вышел новый пост.'
         link = f'https://t.me/{slug}/{message_id}'
-        embed = discord.Embed(title='✦ SIJK SYSTEM | НОВАЯ ПУБЛИКАЦИЯ',
-                              description=discord.utils.escape_markdown(preview), url=link,
-                              color=discord.Color.from_rgb(105, 200, 245))
-        embed.add_field(name='Заголовок', value=discord.utils.escape_markdown(title), inline=False)
-        embed.set_footer(text='✦ Бот-сиджик • Telegram')
+        embed = discord.Embed(
+            title='✈️ SIJK SYSTEM | НОВЫЙ ПОСТ',
+            description=discord.utils.escape_markdown(preview),
+            url=link,
+            color=discord.Color.from_rgb(105, 200, 245)
+        )
+
+        embed.add_field(
+            name='Заголовок',
+            value=discord.utils.escape_markdown(title),
+            inline=False
+        )
+
         view = discord.ui.View()
-        view.add_item(discord.ui.Button(label='Читать в Telegram', style=discord.ButtonStyle.link,
-                                        url=link))
+        view.add_item(discord.ui.Button(
+        label='Читать в Telegram',
+        style=discord.ButtonStyle.link,
+        url=link
+        ))
         success = False
         for target in targets:
             guild = self.bot.get_guild(target['guild_id'])
