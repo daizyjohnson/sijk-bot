@@ -24,6 +24,7 @@ from automod import setup_automod
 from telegram_bridge import setup_telegram
 from notify_roles import setup_notify_roles
 from panel_editor import setup_panel_editor
+from rank_roles import setup_rank_roles
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
@@ -204,6 +205,7 @@ class SijkBot(commands.Bot):
         await setup_notify_roles(self, DB_PATH)
         await setup_automod(self, DB_PATH)
         await setup_panel_editor(self, DB_PATH)
+        await setup_rank_roles(self, DB_PATH)
         if DEV_GUILD_ID:
             guild = discord.Object(id=DEV_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
