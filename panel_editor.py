@@ -191,7 +191,7 @@ class PanelEditor(commands.Cog):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         editor = EditorView(self, interaction.user.id, msg)
-        await interaction.response.send_message('**Редактор SIJK SYSTEM**\nМеняем только Embed. Кнопки и меню остаются прежними.\nИзменения применяются только после «Сохранить».',
+        await interaction.response.send_message('**Редактор SIJK SYSTEM · v2.1 🖼️**\nМеняем только Embed. Кнопки и меню остаются прежними.\nИзменения применяются только после «Сохранить».',
                                                 embed=editor.draft, view=editor, ephemeral=True)
 
     @app_commands.command(name='panel_history', description='История оформления статичной плашки')
@@ -248,6 +248,47 @@ class EditorModal(discord.ui.Modal, title='Редактирование плаш
         await interaction.response.edit_message(embed=draft, view=self.editor)
 
 
+class EmbedImagesModal(discord.ui.Modal, title='Изображения плашки'):
+    def __init__(self, editor: 'EditorView'):
+        super().__init__()
+        self.editor = editor
+        self.thumbnail = discord.ui.TextInput(
+            label='Миниатюра справа (URL)', required=False,
+            placeholder='https://example.com/logo.png', max_length=2048,
+            default=editor.draft.thumbnail.url or '')
+        self.banner = discord.ui.TextInput(
+            label='Большой баннер снизу (URL)', required=False,
+            placeholder='https://example.com/banner.png', max_length=2048,
+            default=editor.draft.image.url or '')
+        self.add_item(self.thumbnail)
+        self.add_item(self.banner)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from urllib.parse import urlsplit
+
+        values = (self.thumbnail.value.strip(), self.banner.value.strip())
+        for value in values:
+            if not value:
+                continue
+            try:
+                parsed = urlsplit(value)
+                valid = (parsed.scheme in ('https', 'http') and bool(parsed.netloc)
+                         and not parsed.username and not parsed.password)
+            except ValueError:
+                valid = False
+            if not valid:
+                await interaction.response.send_message(
+                    'Используй прямую ссылку на изображение, начинающуюся с https:// (или оставь поле пустым, чтобы убрать картинку).',
+                    ephemeral=True)
+                return
+
+        draft = self.editor.draft.copy()
+        draft.set_thumbnail(url=values[0] or None)
+        draft.set_image(url=values[1] or None)
+        self.editor.draft = draft
+        await interaction.response.edit_message(embed=draft, view=self.editor)
+
+
 class EmbedSelector(discord.ui.Select):
     def __init__(self, editor: 'EditorView'):
         self.editor = editor
@@ -282,6 +323,10 @@ class EditorView(discord.ui.View):
     @discord.ui.button(label='Изменить', style=discord.ButtonStyle.primary, emoji='✏️')
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(EditorModal(self))
+
+    @discord.ui.button(label='Фото / баннер', style=discord.ButtonStyle.secondary, emoji='🖼️')
+    async def images(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(EmbedImagesModal(self))
 
     @discord.ui.button(label='Сохранить', style=discord.ButtonStyle.success, emoji='💾')
     async def save(self, interaction: discord.Interaction, button: discord.ui.Button):
