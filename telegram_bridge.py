@@ -133,20 +133,20 @@ class TelegramBridge(commands.Cog):
         if not targets:
             return
         body = (post.get('text') or post.get('caption') or '').strip()
-        title = body.splitlines()[0][:180] if body else 'Новая публикация'
-        preview = body[:550] if body else 'В Telegram-канале вышел новый пост.'
+        lines = [line.strip() for line in body.splitlines() if line.strip()]
+        # Skip a standalone heading if the post begins with one.
+        if len(lines) > 1 and (
+            lines[0].startswith('#')
+            or ('|' in lines[0] and lines[0] == lines[0].upper())
+        ):
+            lines = lines[1:]
+        preview = lines[0][:350] if lines else 'В Telegram-канале вышел новый пост.'
         link = f'https://t.me/{slug}/{message_id}'
         embed = discord.Embed(
             title='✈️ SIJK SYSTEM | НОВЫЙ ПОСТ',
             description=discord.utils.escape_markdown(preview),
             url=link,
             color=discord.Color.from_rgb(105, 200, 245)
-        )
-
-        embed.add_field(
-            name='Заголовок',
-            value=discord.utils.escape_markdown(title),
-            inline=False
         )
 
         view = discord.ui.View()
