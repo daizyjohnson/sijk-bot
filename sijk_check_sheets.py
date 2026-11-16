@@ -1,22 +1,18 @@
-"""Private Google Sheets access using the owner's OAuth 2.0 refresh token.
+"""Private SIJK CHECK access through a secret-protected Google Apps Script web app.
 
-Required environment: SIJK_CHECK_GOOGLE_CLIENT_ID, SIJK_CHECK_GOOGLE_CLIENT_SECRET,
-SIJK_CHECK_GOOGLE_REFRESH_TOKEN. Never commit any of these secrets.
+Required environment:
+    SIJK_CHECK_SCRIPT_URL=https://script.google.com/macros/s/.../exec
+    SIJK_CHECK_SCRIPT_KEY=<random secret in Apps Script properties>
+
+Never publish the key, and never enable public spreadsheet sharing.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
-from urllib.parse import quote
 
 import aiohttp
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-
-DEFAULT_SPREADSHEET_ID = "19Lhc8VIDr6eCL4wHf-jUR3JyjOIdpDHbk7LeXxs9ANY"
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 class CheckSheetError(Exception):
@@ -25,96 +21,63 @@ class CheckSheetError(Exception):
 
 class CheckSheet:
     def __init__(self):
-        self.sheet_id = os.getenv("SIJK_CHECK_SPREADSHEET_ID", DEFAULT_SPREADSHEET_ID)
-        self.client_id = os.getenv("SIJK_CHECK_GOOGLE_CLIENT_ID", "")
-        self.client_secret = os.getenv("SIJK_CHECK_GOOGLE_CLIENT_SECRET", "")
-        self.refresh_token = os.getenv("SIJK_CHECK_GOOGLE_REFRESH_TOKEN", "")
+        self.url = os.getenv("SIJK_CHECK_SCRIPT_URL", "").strip()
+        self.key = os.getenv("SIJK_CHECK_SCRIPT_KEY", "").strip()
         self._cache = {}
         self._expires = 0.0
         self._lock = asyncio.Lock()
 
     @property
     def configured(self):
-        return bool(self.client_id and self.client_secret and self.refresh_token)
+        return self.url.startswith("https://script.google.com/macros/s/") and self.url.endswith("/exec") and len(self.key) >= 32
 
-    def _token(self):
-        creds = Credentials(
-            token=None,
-            refresh_token=self.refresh_token,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            scopes=SCOPES,
-        )
-        creds.refresh(Request())
-        return creds.token
+    async def _call(self, payload):
+        if not self.configured:
+            raise CheckSheetError("Подключение Apps Script не настроено.")
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35)) as session:
+                async with session.post(
+                    self.url, json={**payload, "key": self.key},
+                    allow_redirects=True,
+                    max_redirects=5,
+                ) as response:
+                    if response.status != 200:
+                        raise CheckSheetError("Apps Script временно недоступен.")
+                    data = await response.json(content_type=None)
+            if not isinstance(data, dict) or data.get("ok") is not True:
+                raise CheckSheetError("Apps Script отклонил запрос или вернул ошибку.")
+            return data
+        except CheckSheetError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            raise CheckSheetError("Не удалось связаться с Apps Script.") from exc
 
     async def find(self, riot_key):
-        if not self.configured:
-            raise CheckSheetError("Подключение Google Sheets ещё не настроено.")
+        # The caller supplies a casefolded Riot ID. Exact lookup is case-insensitive.
         async with self._lock:
-            if time.monotonic() >= self._expires:
-                try:
-                    token = await asyncio.to_thread(self._token)
-                    range_name = quote("'База игроков'!A4:G", safe="")
-                    url = f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}/values/{range_name}"
-                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
-                        async with session.get(url, headers={"Authorization": f"Bearer {token}"}) as response:
-                            if response.status != 200:
-                                raise CheckSheetError(f"Google Sheets вернул HTTP {response.status}.")
-                            data = await response.json()
-                    records = {}
-                    for row in data.get("values", []):
-                        if not row or "#" not in row[0]:
-                            continue
-                        record = (row + [""] * 7)[:7]
-                        records[row[0].strip().casefold()] = record
-                    self._cache = records
-                    self._expires = time.monotonic() + 120
-                except CheckSheetError:
-                    raise
-                except (ValueError, KeyError, aiohttp.ClientError, TimeoutError) as exc:
-                    raise CheckSheetError("Не удалось прочитать базу SIJK CHECK.") from exc
-            return self._cache.get(riot_key)
+            now = time.monotonic()
+            if now < self._expires and riot_key in self._cache:
+                return self._cache[riot_key]
+            data = await self._call({"action": "lookup", "riot_id": riot_key})
+            record = data.get("record")
+            if record is not None and (not isinstance(record, list) or len(record) < 2):
+                raise CheckSheetError("Некорректный ответ базы.")
+            result = (record + [""] * 7)[:7] if record else None
+            self._cache[riot_key] = result
+            self._expires = time.monotonic() + 120
+            return result
 
-    async def add_player(self, riot_id: str, score: int, status: str, evidence: str,
-                         comment: str, date: str) -> str:
-        """Add only if missing; never overwrite an existing evaluation.
-
-        Returns 'added' or 'exists'. The spreadsheet remains private.
-        """
-        if not self.configured:
-            raise CheckSheetError("Подключение Google Sheets не настроено.")
+    async def add_player(self, riot_id: str, score: int, status: str,
+                         evidence: str, comment: str, date: str) -> str:
         async with self._lock:
-            try:
-                token = await asyncio.to_thread(self._token)
-                root = f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}/values"
-                headers = {"Authorization": f"Bearer {token}"}
-                read_range = quote("'База игроков'!A4:G", safe="")
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
-                    async with session.get(f"{root}/{read_range}", headers=headers) as response:
-                        if response.status != 200:
-                            raise CheckSheetError(f"Ошибка чтения таблицы: HTTP {response.status}")
-                        data = await response.json()
-                    for row in data.get("values", []):
-                        if row and str(row[0]).strip().casefold() == riot_id.strip().casefold():
-                            self._expires = 0
-                            return "exists"
-                    # Append only to A:G; do not change formatting, permissions or other sheets.
-                    append_range = quote("'База игроков'!A:G", safe="")
-                    url = f"{root}/{append_range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
-                    values = [[riot_id, score, status,
-                               "https://tracker.gg/valorant/profile/riot/" + quote(riot_id, safe="") + "/overview",
-                               evidence, comment, date]]
-                    async with session.post(url, headers=headers, json={"values": values}) as response:
-                        if response.status != 200:
-                            raise CheckSheetError(f"Ошибка записи в таблицу: HTTP {response.status}")
-                        result = await response.json()
-                    if int(result.get("updates", {}).get("updatedRows", 0)) != 1:
-                        raise CheckSheetError("Google Sheets не подтвердил добавление строки.")
-                    self._expires = 0
-                    return "added"
-            except CheckSheetError:
-                raise
-            except (ValueError, KeyError, aiohttp.ClientError, TimeoutError) as exc:
-                raise CheckSheetError("Не удалось записать оценку в таблицу.") from exc
+            data = await self._call({
+                "action": "add", "riot_id": riot_id, "score": score,
+                "status": status, "evidence": evidence,
+                "comment": comment, "date": date,
+            })
+            result = data.get("result")
+            if result not in ("added", "exists"):
+                raise CheckSheetError("Apps Script не подтвердил запись.")
+            self._cache.clear()
+            self._expires = 0.0
+            return result
