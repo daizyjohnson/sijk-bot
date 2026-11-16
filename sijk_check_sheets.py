@@ -1,9 +1,7 @@
-"""Private read/write access to the private SIJK CHECK Google Sheet via service account.
+"""Private Google Sheets access using the owner's OAuth 2.0 refresh token.
 
-Environment:
-  SIJK_CHECK_GOOGLE_CREDENTIALS_JSON: complete service-account JSON (secret)
-  SIJK_CHECK_SPREADSHEET_ID: private spreadsheet ID
-Share the spreadsheet with the service-account client_email as Editor.
+Required environment: SIJK_CHECK_GOOGLE_CLIENT_ID, SIJK_CHECK_GOOGLE_CLIENT_SECRET,
+SIJK_CHECK_GOOGLE_REFRESH_TOKEN. Never commit any of these secrets.
 """
 from __future__ import annotations
 
@@ -15,7 +13,7 @@ from urllib.parse import quote
 
 import aiohttp
 from google.auth.transport.requests import Request
-from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials
 
 DEFAULT_SPREADSHEET_ID = "19Lhc8VIDr6eCL4wHf-jUR3JyjOIdpDHbk7LeXxs9ANY"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -28,18 +26,26 @@ class CheckSheetError(Exception):
 class CheckSheet:
     def __init__(self):
         self.sheet_id = os.getenv("SIJK_CHECK_SPREADSHEET_ID", DEFAULT_SPREADSHEET_ID)
-        self.credentials_json = os.getenv("SIJK_CHECK_GOOGLE_CREDENTIALS_JSON", "")
+        self.client_id = os.getenv("SIJK_CHECK_GOOGLE_CLIENT_ID", "")
+        self.client_secret = os.getenv("SIJK_CHECK_GOOGLE_CLIENT_SECRET", "")
+        self.refresh_token = os.getenv("SIJK_CHECK_GOOGLE_REFRESH_TOKEN", "")
         self._cache = {}
         self._expires = 0.0
         self._lock = asyncio.Lock()
 
     @property
     def configured(self):
-        return bool(self.credentials_json)
+        return bool(self.client_id and self.client_secret and self.refresh_token)
 
     def _token(self):
-        info = json.loads(self.credentials_json)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        creds = Credentials(
+            token=None,
+            refresh_token=self.refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            scopes=SCOPES,
+        )
         creds.refresh(Request())
         return creds.token
 
