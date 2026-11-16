@@ -559,8 +559,8 @@ class SijkCheck(commands.Cog):
             title=discord.utils.escape_markdown(name),
             description=(
                 "**SIJK CHECK · ПРОВЕРКА НА ВИНТРЕЙД**\n\n"
-                f"**СТАТУС: {discord.utils.escape_markdown(status or 'Не указан')}**"
-                + (f"\nОценка: {rating}/10" if rating is not None else "\nОценка отсутствует")
+                + (f"**Подозрительность: {rating}/10**" if rating is not None else "**Оценка отсутствует**")
+                + f"\n**Статус:** {discord.utils.escape_markdown(status or 'Не указан')}"
             ),
             color=RED,
         )
