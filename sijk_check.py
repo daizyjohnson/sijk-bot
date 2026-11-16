@@ -655,24 +655,24 @@ class SijkCheck(commands.Cog):
             else:
                 label = actions.get(action, "Событие")
             stamp = event["created_at"][:16].replace("T", " ")
-            detail = discord.utils.escape_mentions(str(event["detail"] or "")).replace("\\n", " ")
+            detail = discord.utils.escape_mentions(str(event["detail"] or "")).replace("\n", " ")
             if len(detail) > 220:
                 detail = detail[:217] + "..."
             blocks.append(
-                f"**{stamp} UTC · {label}**\\n"
+                f"**{stamp} UTC · {label}**\n"
                 f"Участник: <@{event['user_id']}>"
-                + (f"\\n{detail}" if detail else "")
+                + (f"\n{detail}" if detail else "")
             )
         description = (
-            f"**{discord.utils.escape_markdown(case['riot_id'])}** · Дело #{case['id']}\\n"
-            f"Статус: **{labels.get(case['state'], 'Неизвестен')}**\\n"
+            f"**{discord.utils.escape_markdown(case['riot_id'])}** · Дело #{case['id']}\n"
+            f"Статус: **{labels.get(case['state'], 'Неизвестен')}**\n"
             f"Заявителей: **{reporters}** · Ссылок: **{evidence_count}**"
         )
         if case["reviewer_id"]:
-            description += f"\\nПроверяющий: <@{case['reviewer_id']}>"
+            description += f"\nПроверяющий: <@{case['reviewer_id']}>"
         if case["reviewer_comment"]:
             comment = discord.utils.escape_mentions(str(case["reviewer_comment"]))[:400]
-            description += f"\\nКомментарий решения: {comment}"
+            description += f"\nКомментарий решения: {comment}"
         embed = discord.Embed(
             title="SIJK CHECK · ИСТОРИЯ ЗАЯВКИ",
             description=description[:1900],
@@ -680,7 +680,7 @@ class SijkCheck(commands.Cog):
         )
         embed.add_field(
             name="Хронология (сначала новые)",
-            value="\\n\\n".join(blocks)[:3900] or "Событий пока нет.",
+            value="\n\n".join(blocks)[:3900] or "Событий пока нет.",
             inline=False,
         )
         embed.set_footer(text=f"Страница {page}/{pages} · Всего событий: {total}")
