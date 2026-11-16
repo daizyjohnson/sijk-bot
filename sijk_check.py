@@ -558,9 +558,8 @@ class SijkCheck(commands.Cog):
         embed = discord.Embed(
             title=discord.utils.escape_markdown(name),
             description=(
-                "**SIJK CHECK · ПРОВЕРКА НА ВИНТРЕЙД**\n\n"
+                f"**Статус:** {discord.utils.escape_markdown(status or 'Не указан')}\n\n"
                 + (f"**Подозрительность: {rating}/10**" if rating is not None else "**Оценка отсутствует**")
-                + f"\n**Статус:** {discord.utils.escape_markdown(status or 'Не указан')}"
             ),
             color=RED,
         )
