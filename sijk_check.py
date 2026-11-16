@@ -13,7 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from sijk_check_sheets import CheckSheet, CheckSheetError
-from sijk_check_visuals import meter_png
+from sijk_check_visuals import meter_png, rating_color
 
 RED = 0xB8202B
 RIOT_ID_PATTERN = re.compile(r"^([^#\r\n]{1,32})#([^#\r\n]{1,16})$")
@@ -558,10 +558,10 @@ class SijkCheck(commands.Cog):
         embed = discord.Embed(
             title=discord.utils.escape_markdown(name),
             description=(
-                f"**Статус:** {discord.utils.escape_markdown(status or 'Не указан')}\n\n"
-                + (f"**Подозрительность: {rating}/10**" if rating is not None else "**Оценка отсутствует**")
+                f"Статус: **{discord.utils.escape_markdown(status or 'Не указан')}**\n"
+                + (f"Подозрительность: **{rating}/10**" if rating is not None else "Оценка отсутствует")
             ),
-            color=RED,
+            color=discord.Color.from_rgb(*rating_color(rating)) if rating is not None else RED,
         )
         file = None
         if rating is not None:
