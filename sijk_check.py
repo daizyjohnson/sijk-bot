@@ -14,7 +14,7 @@ from discord.ext import commands
 from sijk_check_sheets import CheckSheet, CheckSheetError
 
 RED = 0xB8202B
-RIOT_ID_PATTERN = re.compile(r"^(.{1,32})#(.{1,16})$", re.DOTALL)
+RIOT_ID_PATTERN = re.compile(r"^([^#\r\n]{1,32})#([^#\r\n]{1,16})$")
 
 
 def normalize_riot_id(value: str) -> tuple[str, str]:
@@ -139,9 +139,7 @@ class CheckStore:
             if previous and not new_links:
                 db.commit()
                 return case["id"], "unchanged"
-            if case["state"] != "pending":
-                db.execute("UPDATE check_cases SET state='pending',reviewer_id=NULL,reviewer_comment=NULL,reviewed_at=NULL WHERE id=?",
-                           (case["id"],))
+            # Keep reviewed decisions intact when new evidence is submitted.
             db.execute("UPDATE check_cases SET updated_at=? WHERE id=?", (now, case["id"]))
             db.execute("INSERT INTO check_events(case_id,user_id,event,detail,created_at) VALUES(?,?,?,?,?)",
                        (case["id"], user_id, "supplement" if previous else "report", reason, now))
@@ -254,7 +252,7 @@ class CheckPanel(discord.ui.View):
             await interaction.response.send_message("Открой канал SIJK CHECK.", ephemeral=True)
             return
         cases = self.cog.store.my_cases(interaction.guild.id, interaction.user.id)
-        labels = {"pending": "На рассмотрении", "approved": "Добавлен в базу", "approved_pending_sync": "Ожидает внесения в базу", "approved": "Добавлен в базу",
+        labels = {"pending": "На рассмотрении", "approved": "Добавлен в базу", "approved_pending_sync": "Ожидает внесения в базу",
                   "insufficient": "Недостаточно доказательств", "rejected": "Отклонена"}
         if not cases:
             message = "Ты пока не отправлял заявки."
@@ -497,7 +495,7 @@ class SijkCheck(commands.Cog):
         channel = guild.get_channel(settings["review_channel_id"]) if settings else None
         if not isinstance(channel, discord.TextChannel):
             return
-        labels = {"pending": "На рассмотрении", "approved_pending_sync": "Ожидает внесения в базу",
+        labels = {"pending": "На рассмотрении", "approved": "Добавлен в базу", "approved_pending_sync": "Ожидает внесения в базу",
                   "insufficient": "Недостаточно доказательств", "rejected": "Отклонена"}
         embed = discord.Embed(title="SIJK CHECK • " + labels.get(row["state"], "На рассмотрении"),
                               description=f"**{discord.utils.escape_markdown(row['riot_id'])}**\n"
@@ -555,9 +553,7 @@ class SijkCheck(commands.Cog):
         if comment:
             embed.add_field(name="Комментарий", value=discord.utils.escape_mentions(comment)[:1000],
                             inline=False)
-        if evidence:
-            embed.add_field(name="Доказательства", value=discord.utils.escape_mentions(evidence)[:1000],
-                            inline=False)
+        # Evidence is private to reviewers; do not expose it in public lookup.
         if date:
             embed.add_field(name="Дата оценки", value=str(date)[:100], inline=False)
         embed.set_footer(text="Личная оценка SIJK, не установленный факт нарушения правил.")
