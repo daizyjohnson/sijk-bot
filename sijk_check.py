@@ -11,6 +11,7 @@ from urllib.parse import quote, urlparse
 import discord
 from discord import app_commands
 from discord.ext import commands
+from sijk_check_sheets import CheckSheet, CheckSheetError
 
 RED = 0xB8202B
 RIOT_ID_PATTERN = re.compile(r"^(.{1,32})#(.{1,16})$", re.DOTALL)
@@ -197,10 +198,46 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
         await self.cog.notify_review(interaction.guild, case_id)
 
 
+class LookupModal(discord.ui.Modal, title="SIJK CHECK • Проверить игрока"):
+    riot_id = discord.ui.TextInput(label="Riot ID (Ник#Тег)", max_length=50)
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction):
+        if not self.cog.in_public_channel(interaction):
+            await interaction.response.send_message("Проверка доступна только в канале SIJK CHECK.",
+                                                    ephemeral=True)
+            return
+        await self.cog.lookup(interaction, str(self.riot_id))
+
+
+class MissingPlayerView(discord.ui.View):
+    def __init__(self, cog, riot_id):
+        super().__init__(timeout=600)
+        self.cog, self.riot_id = cog, riot_id
+
+    @discord.ui.button(label="Оформить заявку", style=discord.ButtonStyle.danger, emoji="📝")
+    async def report(self, interaction, button):
+        if not self.cog.in_public_channel(interaction):
+            await interaction.response.send_message("Открой канал SIJK CHECK.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ReportModal(self.cog, self.riot_id))
+
+
 class CheckPanel(discord.ui.View):
     def __init__(self, cog: "SijkCheck"):
         super().__init__(timeout=None)
         self.cog = cog
+
+    @discord.ui.button(label="Проверить игрока", style=discord.ButtonStyle.primary,
+                       custom_id="sijk_check:lookup", emoji="🔎")
+    async def lookup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.cog.in_public_channel(interaction):
+            await interaction.response.send_message("Открой канал SIJK CHECK.", ephemeral=True)
+            return
+        await interaction.response.send_modal(LookupModal(self.cog))
 
     @discord.ui.button(label="Подать заявку", style=discord.ButtonStyle.danger,
                        custom_id="sijk_check:report", emoji="📝")
@@ -371,6 +408,7 @@ class SijkCheck(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: Path):
         self.bot = bot
         self.store = CheckStore(db_path)
+        self.sheet = CheckSheet()
         self.bot.add_view(CheckPanel(self))
         self.bot.add_view(ReviewPanel(self))
 
@@ -412,6 +450,58 @@ class SijkCheck(commands.Cog):
         except discord.HTTPException:
             pass
 
+    async def lookup(self, interaction: discord.Interaction, riot_id: str):
+        try:
+            riot_id, key = normalize_riot_id(riot_id)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            record = await self.sheet.find(key)
+        except CheckSheetError:
+            await interaction.followup.send(
+                "База временно недоступна. Это не означает, что игрок отсутствует в ней. "
+                "Попробуй позже.", ephemeral=True)
+            return
+        if not record:
+            embed = discord.Embed(title="SIJK CHECK • Нет информации",
+                description=f"**{discord.utils.escape_markdown(riot_id)}**\\n\\n"
+                "У SIJK пока нет опубликованной оценки этого игрока. "
+                "Отсутствие записи ничего не говорит о его поведении.",
+                color=RED)
+            await interaction.followup.send(embed=embed, view=MissingPlayerView(self, riot_id),
+                                            ephemeral=True)
+            return
+        name, score, status, tracker, evidence, comment, date = record
+        embed = discord.Embed(title="SIJK CHECK • Оценка Сиджика",
+                              description=f"**{discord.utils.escape_markdown(name)}**",
+                              color=RED)
+        embed.add_field(name="Оценка Сиджика", value=f"**{score}/10**" if score else "Не указана")
+        embed.add_field(name="Статус", value=status or "Не указан")
+        if comment:
+            embed.add_field(name="Комментарий", value=discord.utils.escape_mentions(comment)[:1000],
+                            inline=False)
+        if evidence:
+            embed.add_field(name="Доказательства", value=discord.utils.escape_mentions(evidence)[:1000],
+                            inline=False)
+        if date:
+            embed.add_field(name="Дата оценки", value=str(date)[:100], inline=False)
+        embed.set_footer(text="Личная оценка SIJK, не установленный факт нарушения правил.")
+        view = discord.ui.View()
+        url = tracker if isinstance(tracker, str) and tracker.startswith("https://tracker.gg/") else tracker_url(name)
+        view.add_item(discord.ui.Button(label="Tracker.gg", url=url, style=discord.ButtonStyle.link))
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    @app_commands.command(name="check", description="Проверить игрока по базе SIJK CHECK")
+    @app_commands.describe(riot_id="Riot ID в формате Ник#Тег")
+    async def check(self, interaction: discord.Interaction, riot_id: str):
+        if not self.in_public_channel(interaction):
+            await interaction.response.send_message("Команда доступна только в канале SIJK CHECK.",
+                                                    ephemeral=True)
+            return
+        await self.lookup(interaction, riot_id)
+
     @app_commands.command(name="check_setup", description="Настроить каналы SIJK CHECK")
     @app_commands.default_permissions(administrator=True)
     async def check_setup(self, interaction: discord.Interaction,
@@ -439,8 +529,8 @@ class SijkCheck(commands.Cog):
             await interaction.response.send_message("Используй команду в настроенном публичном канале.", ephemeral=True)
             return
         embed = discord.Embed(
-            title="SIJK CHECK • Заявки на проверку",
-            description="Подозреваешь игрока в винтрейдинге? Отправь Riot ID, причину и ссылки на доказательства.\n\n"
+            title="SIJK CHECK • Проверка игроков",
+            description="Проверь Riot ID по базе оценок SIJK или отправь заявку на рассмотрение.\n\n"
             "**Только Расцвет 1 (Ascendant 1) и выше.** Заявки на игроков более низкого ранга "
             "будут отклонены без рассмотрения.\n\n"
             "Оценки отражают личное мнение SIJK и не являются доказательством нарушения.",
