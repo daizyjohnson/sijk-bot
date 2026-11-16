@@ -1,0 +1,11 @@
+# SIJK CHECK / Google OAuth secrets
+client_secret*.json
+*oauth_secrets*.txt
+sijk_check_oauth_secrets.txt
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+data/
+*.sqlite3
