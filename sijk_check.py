@@ -254,7 +254,7 @@ class CheckPanel(discord.ui.View):
             await interaction.response.send_message("Открой канал SIJK CHECK.", ephemeral=True)
             return
         cases = self.cog.store.my_cases(interaction.guild.id, interaction.user.id)
-        labels = {"pending": "На рассмотрении", "approved": "Добавлен в базу", "approved_pending_sync": "Ожидает внесения в базу",
+        labels = {"pending": "На рассмотрении", "approved": "Добавлен в базу", "approved_pending_sync": "Ожидает внесения в базу", "approved": "Добавлен в базу",
                   "insufficient": "Недостаточно доказательств", "rejected": "Отклонена"}
         if not cases:
             message = "Ты пока не отправлял заявки."
@@ -308,6 +308,77 @@ class DecisionModal(discord.ui.Modal, title="SIJK CHECK • Решение"):
             if self.state == "approved_pending_sync" else "Решение сохранено, комментарий виден заявителям.",
             ephemeral=True)
         await self.cog.notify_review(interaction.guild, self.case_id)
+
+
+class ApprovalModal(discord.ui.Modal, title="SIJK CHECK • Добавить в базу"):
+    score = discord.ui.TextInput(label="Оценка от 1 до 10", max_length=2, placeholder="10")
+    status = discord.ui.TextInput(label="Статус", max_length=32,
+                                  placeholder="Да / Вероятнее да / Под вопросом / Вероятнее нет / Нет")
+    comment = discord.ui.TextInput(label="Комментарий для базы и заявителей",
+                                    style=discord.TextStyle.paragraph, max_length=1000)
+
+    def __init__(self, cog, case_id):
+        super().__init__()
+        self.cog, self.case_id = cog, case_id
+
+    async def on_submit(self, interaction):
+        if not _check_review_allowed(self.cog, interaction):
+            await interaction.response.send_message("Нет доступа.", ephemeral=True)
+            return
+        try:
+            score = int(str(self.score).strip())
+        except ValueError:
+            score = 0
+        status = str(self.status).strip()
+        if score not in range(1, 11) or status not in {
+            "Да", "Вероятнее да", "Под вопросом", "Вероятнее нет", "Нет"
+        }:
+            await interaction.response.send_message(
+                "Оценка — число от 1 до 10; статус — один из пяти вариантов из подсказки.",
+                ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Only one active writer per bot process. Google Sheets append is not transactional.
+        async with self.cog.approval_lock:
+            with closing(self.cog.store.connect()) as db:
+                row = db.execute("SELECT * FROM check_cases WHERE id=? AND guild_id=?",
+                                 (self.case_id, interaction.guild.id)).fetchone()
+                if not row or row["state"] not in ("pending", "approved_pending_sync"):
+                    await interaction.followup.send("Дело уже рассмотрено.", ephemeral=True)
+                    return
+                evidence = db.execute("SELECT url FROM check_evidence WHERE case_id=? ORDER BY id",
+                                      (self.case_id,)).fetchall()
+            now = datetime.now(timezone.utc).isoformat()
+            links = "\n".join(item["url"] for item in evidence)
+            try:
+                result = await self.cog.sheet.add_player(
+                    row["riot_id"], score, status, links[:40000], str(self.comment), now[:10])
+            except CheckSheetError:
+                # Retain the case and allow manual retry. Never claim successful publication.
+                with closing(self.cog.store.connect()) as db:
+                    db.execute("""UPDATE check_cases SET state='approved_pending_sync',
+                                  reviewer_id=?, reviewer_comment=?, reviewed_at=?, updated_at=?
+                                  WHERE id=? AND state IN ('pending','approved_pending_sync')""",
+                               (interaction.user.id, str(self.comment), now, now, self.case_id))
+                    db.commit()
+                await interaction.followup.send(
+                    "Google Sheets не подтвердил запись. Дело сохранено как ожидающее синхронизации. "
+                    "Повтори «Добавить в базу» позже.", ephemeral=True)
+                await self.cog.notify_review(interaction.guild, self.case_id)
+                return
+            with closing(self.cog.store.connect()) as db:
+                db.execute("""UPDATE check_cases SET state='approved',
+                              reviewer_id=?, reviewer_comment=?, reviewed_at=?, updated_at=?
+                              WHERE id=?""", (interaction.user.id, str(self.comment), now, now, self.case_id))
+                db.execute("INSERT INTO check_events(case_id,user_id,event,detail,created_at) VALUES(?,?,?,?,?)",
+                           (self.case_id, interaction.user.id, "approved:" + result,
+                            f"{score}/10 | {status} | {str(self.comment)}", now))
+                db.commit()
+            await interaction.followup.send(
+                "Игрок добавлен в закрытую таблицу, решение сохранено." if result == "added"
+                else "Игрок уже есть в таблице — существующая оценка не изменена. "
+                     "Дело помечено как рассмотренное.", ephemeral=True)
+            await self.cog.notify_review(interaction.guild, self.case_id)
 
 
 class EvidencePages(discord.ui.View):
@@ -387,7 +458,7 @@ class ReviewPanel(discord.ui.View):
     async def approve(self, interaction, button):
         row = await self.find_case(interaction)
         if row:
-            await interaction.response.send_modal(DecisionModal(self.cog, row["id"], "approved_pending_sync"))
+            await interaction.response.send_modal(ApprovalModal(self.cog, row["id"]))
 
     @discord.ui.button(label="Недостаточно доказательств", style=discord.ButtonStyle.secondary,
                        custom_id="sijk_check:review:insufficient", row=1)
@@ -409,6 +480,8 @@ class SijkCheck(commands.Cog):
         self.bot = bot
         self.store = CheckStore(db_path)
         self.sheet = CheckSheet()
+        import asyncio
+        self.approval_lock = asyncio.Lock()
         self.bot.add_view(CheckPanel(self))
         self.bot.add_view(ReviewPanel(self))
 
