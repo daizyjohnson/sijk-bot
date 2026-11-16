@@ -212,7 +212,7 @@ class CheckPanel(discord.ui.View):
             await interaction.response.send_message("Открой канал SIJK CHECK.", ephemeral=True)
             return
         cases = self.cog.store.my_cases(interaction.guild.id, interaction.user.id)
-        labels = {"pending": "На рассмотрении", "approved": "Добавлен в базу",
+        labels = {"pending": "На рассмотрении", "approved": "Добавлен в базу", "approved_pending_sync": "Ожидает внесения в базу",
                   "insufficient": "Недостаточно доказательств", "rejected": "Отклонена"}
         if not cases:
             message = "Ты пока не отправлял заявки."
@@ -224,11 +224,149 @@ class CheckPanel(discord.ui.View):
         await interaction.response.send_message(message[:1900], ephemeral=True)
 
 
+
+# Review workflow: only administrators can decide until a dedicated reviewer role is agreed.
+def _check_review_allowed(cog, interaction):
+    settings = cog.store.settings(interaction.guild.id) if interaction.guild else None
+    return bool(settings and interaction.channel_id == settings["review_channel_id"]
+                and isinstance(interaction.user, discord.Member)
+                and interaction.user.guild_permissions.administrator)
+
+
+class DecisionModal(discord.ui.Modal, title="SIJK CHECK • Решение"):
+    comment = discord.ui.TextInput(label="Комментарий для заявителей",
+                                    style=discord.TextStyle.paragraph, required=True, max_length=1000)
+
+    def __init__(self, cog, case_id, state):
+        super().__init__()
+        self.cog, self.case_id, self.state = cog, case_id, state
+
+    async def on_submit(self, interaction):
+        if not _check_review_allowed(self.cog, interaction):
+            await interaction.response.send_message("Нет доступа.", ephemeral=True)
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(self.cog.store.connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state FROM check_cases WHERE id=? AND guild_id=?",
+                             (self.case_id, interaction.guild.id)).fetchone()
+            if not row or row["state"] != "pending":
+                db.rollback()
+                await interaction.response.send_message("Дело уже рассмотрено или изменилось.", ephemeral=True)
+                return
+            db.execute("""UPDATE check_cases SET state=?,reviewer_id=?,reviewer_comment=?,
+                          reviewed_at=?,updated_at=? WHERE id=?""",
+                       (self.state, interaction.user.id, str(self.comment), now, now, self.case_id))
+            db.execute("INSERT INTO check_events(case_id,user_id,event,detail,created_at) VALUES(?,?,?,?,?)",
+                       (self.case_id, interaction.user.id, "decision:" + self.state, str(self.comment), now))
+            db.commit()
+        await interaction.response.send_message(
+            "Решение сохранено. Одобрение пока ожидает синхронизации с Google Sheets."
+            if self.state == "approved_pending_sync" else "Решение сохранено, комментарий виден заявителям.",
+            ephemeral=True)
+        await self.cog.notify_review(interaction.guild, self.case_id)
+
+
+class EvidencePages(discord.ui.View):
+    def __init__(self, cog, case_id, user_id):
+        super().__init__(timeout=180)
+        self.cog, self.case_id, self.user_id, self.page = cog, case_id, user_id, 0
+
+    def render(self):
+        with closing(self.cog.store.connect()) as db:
+            reporters = db.execute("SELECT * FROM check_reporters WHERE case_id=? ORDER BY created_at",
+                                   (self.case_id,)).fetchall()
+            evidence = db.execute("SELECT * FROM check_evidence WHERE case_id=? ORDER BY created_at",
+                                  (self.case_id,)).fetchall()
+        pages = max(1, (len(reporters) + 2) // 3)
+        self.page = max(0, min(self.page, pages - 1))
+        blocks = []
+        for r in reporters[self.page * 3:self.page * 3 + 3]:
+            links = [e["url"] for e in evidence if e["user_id"] == r["user_id"]]
+            block = (f"**Заявитель:** <@{r['user_id']}> (ID {r['user_id']})\\n"
+                     f"**Причина:** {discord.utils.escape_mentions(r['reason'])[:450]}\\n"
+                     f"**Дата:** {r['created_at'][:16]} UTC\\n"
+                     "**Доказательства:**\\n" +
+                     ("\\n".join(discord.utils.escape_mentions(u)[:220] for u in links[:8]) or "—"))
+            if len(links) > 8:
+                block += f"\\n… ещё {len(links) - 8}"
+            blocks.append(block)
+        embed = discord.Embed(title=f"SIJK CHECK • Дело #{self.case_id}",
+                              description="\\n\\n".join(blocks)[:3900] or "Пусто", color=RED)
+        embed.set_footer(text=f"Страница {self.page + 1}/{pages} • Всего заявителей: {len(reporters)}")
+        self.back.disabled = self.page == 0
+        self.forward.disabled = self.page == pages - 1
+        return embed
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id or not _check_review_allowed(self.cog, interaction):
+            await interaction.response.send_message("Нет доступа.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Назад", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction, button):
+        self.page -= 1
+        await interaction.response.edit_message(embed=self.render(), view=self)
+
+    @discord.ui.button(label="Далее", style=discord.ButtonStyle.secondary)
+    async def forward(self, interaction, button):
+        self.page += 1
+        await interaction.response.edit_message(embed=self.render(), view=self)
+
+
+class ReviewPanel(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def find_case(self, interaction):
+        if not _check_review_allowed(self.cog, interaction):
+            await interaction.response.send_message("Нет доступа к рассмотрению.", ephemeral=True)
+            return None
+        with closing(self.cog.store.connect()) as db:
+            row = db.execute("SELECT * FROM check_cases WHERE guild_id=? AND review_message_id=?",
+                             (interaction.guild.id, interaction.message.id)).fetchone()
+        if not row:
+            await interaction.response.send_message("Карточка не найдена.", ephemeral=True)
+        return row
+
+    @discord.ui.button(label="Заявители и доказательства", style=discord.ButtonStyle.secondary,
+                       custom_id="sijk_check:review:reporters", row=0)
+    async def reporters(self, interaction, button):
+        row = await self.find_case(interaction)
+        if row:
+            view = EvidencePages(self.cog, row["id"], interaction.user.id)
+            await interaction.response.send_message(embed=view.render(), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Добавить в базу", style=discord.ButtonStyle.success,
+                       custom_id="sijk_check:review:approve", row=1)
+    async def approve(self, interaction, button):
+        row = await self.find_case(interaction)
+        if row:
+            await interaction.response.send_modal(DecisionModal(self.cog, row["id"], "approved_pending_sync"))
+
+    @discord.ui.button(label="Недостаточно доказательств", style=discord.ButtonStyle.secondary,
+                       custom_id="sijk_check:review:insufficient", row=1)
+    async def insufficient(self, interaction, button):
+        row = await self.find_case(interaction)
+        if row:
+            await interaction.response.send_modal(DecisionModal(self.cog, row["id"], "insufficient"))
+
+    @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.danger,
+                       custom_id="sijk_check:review:reject", row=2)
+    async def reject(self, interaction, button):
+        row = await self.find_case(interaction)
+        if row:
+            await interaction.response.send_modal(DecisionModal(self.cog, row["id"], "rejected"))
+
+
 class SijkCheck(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: Path):
         self.bot = bot
         self.store = CheckStore(db_path)
         self.bot.add_view(CheckPanel(self))
+        self.bot.add_view(ReviewPanel(self))
 
     def in_public_channel(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild:
@@ -242,21 +380,26 @@ class SijkCheck(commands.Cog):
         channel = guild.get_channel(settings["review_channel_id"]) if settings else None
         if not isinstance(channel, discord.TextChannel):
             return
-        embed = discord.Embed(title="SIJK CHECK • На рассмотрении",
-                              description=f"**{discord.utils.escape_markdown(row['riot_id'])}**\n"
-                              f"Уникальных заявителей: **{count}**\n"
-                              f"[Tracker.gg]({tracker_url(row['riot_id'])})",
-                              color=RED)
-        embed.set_footer(text=f"Дело #{case_id} • Подробная панель рассмотрения — следующий этап")
+        labels = {"pending": "На рассмотрении", "approved_pending_sync": "Ожидает внесения в базу",
+                  "insufficient": "Недостаточно доказательств", "rejected": "Отклонена"}
+        embed = discord.Embed(title="SIJK CHECK • " + labels.get(row["state"], "На рассмотрении"),
+                              description=f"**{discord.utils.escape_markdown(row['riot_id'])}**\\n"
+                              f"Уникальных заявителей: **{count}**\\n"
+                              f"[Tracker.gg]({tracker_url(row['riot_id'])})", color=RED)
+        if row["reviewer_comment"]:
+            embed.add_field(name="Комментарий решения",
+                            value=discord.utils.escape_mentions(row["reviewer_comment"])[:1000], inline=False)
+        embed.set_footer(text=f"Дело #{case_id}")
         try:
             if row["review_message_id"]:
                 try:
                     message = await channel.fetch_message(row["review_message_id"])
-                    await message.edit(embed=embed)
+                    await message.edit(embed=embed, view=ReviewPanel(self))
                     return
                 except discord.NotFound:
                     pass
-            message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            message = await channel.send(embed=embed, view=ReviewPanel(self),
+                                         allowed_mentions=discord.AllowedMentions.none())
             with closing(self.store.connect()) as db:
                 db.execute("UPDATE check_cases SET review_message_id=? WHERE id=?", (message.id, case_id))
                 db.commit()
