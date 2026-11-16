@@ -10,6 +10,16 @@ SEGMENTS = 10
 SEGMENT_WIDTH = (WIDTH - PAD * 2 - GAP * (SEGMENTS - 1)) // SEGMENTS
 
 
+def rating_color(rating: int) -> tuple[int, int, int]:
+    if rating <= 3:
+        return (51, 185, 119)
+    if rating <= 6:
+        return (235, 189, 56)
+    if rating <= 8:
+        return (237, 137, 54)
+    return (219, 51, 76)
+
+
 def meter_png(rating: int) -> bytes:
     if type(rating) is not int or not 1 <= rating <= 10:
         raise ValueError("Rating must be between 1 and 10")
@@ -20,7 +30,7 @@ def meter_png(rating: int) -> bytes:
         draw.rounded_rectangle(
             (x, PAD, x + SEGMENT_WIDTH - 1, HEIGHT - PAD - 1),
             radius=12,
-            fill=(219, 51, 76, 255) if i < rating else (64, 62, 75, 255),
+            fill=(*rating_color(rating), 255) if i < rating else (64, 62, 75, 255),
         )
     stream = BytesIO()
     image.save(stream, format="PNG", optimize=True)
