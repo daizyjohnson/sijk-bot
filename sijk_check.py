@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from io import BytesIO
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from sijk_check_sheets import CheckSheet, CheckSheetError
+from sijk_check_visuals import meter_png
 
 RED = 0xB8202B
 RIOT_ID_PATTERN = re.compile(r"^([^#\r\n]{1,32})#([^#\r\n]{1,16})$")
@@ -552,20 +554,21 @@ class SijkCheck(commands.Cog):
             rating = None
         if rating is not None and not 1 <= rating <= 10:
             rating = None
-        # Ten clearly separated segments; unlike an image, these remain
-        # accessible and work without adding image libraries or file uploads.
-        bar = ("🟥" * rating + "⬛" * (10 - rating)) if rating is not None else "—"
+        # The player's Riot ID is the embed title, which Discord renders larger.
         embed = discord.Embed(
-            title="SIJK CHECK • ПРОВЕРКА НА ВИНТРЕЙД",
+            title=discord.utils.escape_markdown(name),
             description=(
-                f"**{discord.utils.escape_markdown(name)}**\n\n"
-                f"**Подозрительность**    **{rating}/10**\n"
-                f"{bar}\n"
+                "**SIJK CHECK · ПРОВЕРКА НА ВИНТРЕЙД**\n\n"
+                f"**Подозрительность: {rating}/10**\n"
                 "1 — не винтрейдер · 10 — максимальная подозрительность\n\n"
                 f"**СТАТУС: {discord.utils.escape_markdown(status or 'Не указан')}**"
             ),
             color=RED,
         )
+        file = None
+        if rating is not None:
+            file = discord.File(BytesIO(meter_png(rating)), filename="sijk_check_meter.png")
+            embed.set_image(url="attachment://sijk_check_meter.png")
         if comment:
             embed.add_field(name="Комментарий SIJK",
                             value=discord.utils.escape_mentions(str(comment))[:1000],
@@ -576,7 +579,7 @@ class SijkCheck(commands.Cog):
         view = discord.ui.View()
         url = tracker if isinstance(tracker, str) and tracker.startswith("https://tracker.gg/") else tracker_url(name)
         view.add_item(discord.ui.Button(label="Чекнуть трекер", url=url, style=discord.ButtonStyle.link))
-        await interaction.followup.send(embed=embed, view=view, ephemeral=False)
+        await interaction.followup.send(embed=embed, view=view, file=file, ephemeral=False)
 
     @app_commands.command(name="check", description="Проверить игрока по базе SIJK CHECK")
     @app_commands.describe(riot_id="Riot ID в формате Ник#Тег")
