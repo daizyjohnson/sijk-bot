@@ -527,7 +527,8 @@ class SijkCheck(commands.Cog):
         except ValueError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # The lookup is public; validation errors and reporting remain private.
+        await interaction.response.defer(ephemeral=False, thinking=True)
         try:
             record = await self.sheet.find(key)
         except CheckSheetError:
@@ -545,22 +546,36 @@ class SijkCheck(commands.Cog):
                                             ephemeral=True)
             return
         name, score, status, tracker, evidence, comment, date = record
-        embed = discord.Embed(title="SIJK CHECK • Оценка Сиджика",
-                              description=f"**{discord.utils.escape_markdown(name)}**",
-                              color=RED)
-        embed.add_field(name="Оценка Сиджика", value=f"**{score}/10**" if score else "Не указана")
-        embed.add_field(name="Статус", value=status or "Не указан")
+        try:
+            rating = int(float(str(score).replace(",", ".")))
+        except (ValueError, TypeError):
+            rating = None
+        if rating is not None and not 1 <= rating <= 10:
+            rating = None
+        # Ten clearly separated segments; unlike an image, these remain
+        # accessible and work without adding image libraries or file uploads.
+        bar = ("🟥" * rating + "⬛" * (10 - rating)) if rating is not None else "—"
+        embed = discord.Embed(
+            title="SIJK CHECK • ПРОВЕРКА НА ВИНТРЕЙД",
+            description=(
+                f"**{discord.utils.escape_markdown(name)}**\n\n"
+                f"**ОЦЕНКА ПОДОЗРИТЕЛЬНОСТИ**    **{rating}/10**\n"
+                f"{bar}\n\n"
+                f"**СТАТУС: {discord.utils.escape_markdown(status or 'Не указан')}**"
+            ),
+            color=RED,
+        )
         if comment:
-            embed.add_field(name="Комментарий", value=discord.utils.escape_mentions(comment)[:1000],
+            embed.add_field(name="Комментарий SIJK",
+                            value=discord.utils.escape_mentions(str(comment))[:1000],
                             inline=False)
-        # Evidence is private to reviewers; do not expose it in public lookup.
         if date:
             embed.add_field(name="Дата оценки", value=str(date)[:100], inline=False)
-        embed.set_footer(text="Личная оценка SIJK, не установленный факт нарушения правил.")
+        embed.set_footer(text="Субъективная оценка SIJK. Не доказательство нарушения правил.")
         view = discord.ui.View()
         url = tracker if isinstance(tracker, str) and tracker.startswith("https://tracker.gg/") else tracker_url(name)
-        view.add_item(discord.ui.Button(label="Tracker.gg", url=url, style=discord.ButtonStyle.link))
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        view.add_item(discord.ui.Button(label="Открыть Tracker.gg", url=url, style=discord.ButtonStyle.link))
+        await interaction.followup.send(embed=embed, view=view, ephemeral=False)
 
     @app_commands.command(name="check", description="Проверить игрока по базе SIJK CHECK")
     @app_commands.describe(riot_id="Riot ID в формате Ник#Тег")
