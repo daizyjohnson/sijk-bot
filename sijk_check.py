@@ -559,8 +559,9 @@ class SijkCheck(commands.Cog):
             title="SIJK CHECK • ПРОВЕРКА НА ВИНТРЕЙД",
             description=(
                 f"**{discord.utils.escape_markdown(name)}**\n\n"
-                f"**ОЦЕНКА ПОДОЗРИТЕЛЬНОСТИ**    **{rating}/10**\n"
-                f"{bar}\n\n"
+                f"**Подозрительность**    **{rating}/10**\n"
+                f"{bar}\n"
+                "1 — не винтрейдер · 10 — максимальная подозрительность\n\n"
                 f"**СТАТУС: {discord.utils.escape_markdown(status or 'Не указан')}**"
             ),
             color=RED,
@@ -571,10 +572,10 @@ class SijkCheck(commands.Cog):
                             inline=False)
         if date:
             embed.add_field(name="Дата оценки", value=str(date)[:100], inline=False)
-        embed.set_footer(text="Субъективная оценка SIJK. Не доказательство нарушения правил.")
+        embed.set_footer(text="Субъективная оценка. Не доказательство нарушения правил.")
         view = discord.ui.View()
         url = tracker if isinstance(tracker, str) and tracker.startswith("https://tracker.gg/") else tracker_url(name)
-        view.add_item(discord.ui.Button(label="Открыть Tracker.gg", url=url, style=discord.ButtonStyle.link))
+        view.add_item(discord.ui.Button(label="Чекнуть трекер", url=url, style=discord.ButtonStyle.link))
         await interaction.followup.send(embed=embed, view=view, ephemeral=False)
 
     @app_commands.command(name="check", description="Проверить игрока по базе SIJK CHECK")
