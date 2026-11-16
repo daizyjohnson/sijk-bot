@@ -626,7 +626,7 @@ class SijkCheck(commands.Cog):
                 "*Результаты проверки — субъективная оценка Сиджа, "
                 "а не подтверждённый факт нарушения правил.*"
             ),
-            color=RED)
+            color=discord.Color.from_rgb(255, 255, 255))
         await interaction.channel.send(embed=embed, view=CheckPanel(self))
         await interaction.response.send_message("Панель опубликована.", ephemeral=True)
 
