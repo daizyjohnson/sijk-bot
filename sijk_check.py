@@ -466,7 +466,7 @@ class SijkCheck(commands.Cog):
             return
         if not record:
             embed = discord.Embed(title="SIJK CHECK • Нет информации",
-                description=f"**{discord.utils.escape_markdown(riot_id)}**\\n\\n"
+                description=f"**{discord.utils.escape_markdown(riot_id)}**\n\n"
                 "У SIJK пока нет опубликованной оценки этого игрока. "
                 "Отсутствие записи ничего не говорит о его поведении.",
                 color=RED)
