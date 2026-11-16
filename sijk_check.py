@@ -443,6 +443,13 @@ class ReviewPanel(discord.ui.View):
                              (interaction.guild.id, interaction.message.id)).fetchone()
         if not row:
             await interaction.response.send_message("Карточка не найдена.", ephemeral=True)
+            return None
+        # Old messages/interactions may survive an edit or restart. Never allow
+        # a new decision for a case that is already closed.
+        if row["state"] not in ("pending", "approved_pending_sync"):
+            await interaction.response.send_message(
+                "Заявка уже закрыта. Решение можно посмотреть в карточке.", ephemeral=True)
+            return None
         return row
 
     @discord.ui.button(label="Заявители и доказательства", style=discord.ButtonStyle.secondary,
@@ -506,16 +513,21 @@ class SijkCheck(commands.Cog):
         if row["reviewer_comment"]:
             embed.add_field(name="Комментарий решения",
                             value=discord.utils.escape_mentions(row["reviewer_comment"])[:1000], inline=False)
+        if row["reviewer_id"] and row["state"] not in ("pending", "approved_pending_sync"):
+            embed.add_field(name="Проверяющий", value=f"<@{row['reviewer_id']}>", inline=False)
         embed.set_footer(text=f"Дело #{case_id}")
+        # A closed case is an archive card, not an actionable review form.
+        # Keep buttons only while pending or when a failed Sheets write needs retry.
+        view = ReviewPanel(self) if row["state"] in ("pending", "approved_pending_sync") else None
         try:
             if row["review_message_id"]:
                 try:
                     message = await channel.fetch_message(row["review_message_id"])
-                    await message.edit(embed=embed, view=ReviewPanel(self))
+                    await message.edit(embed=embed, view=view)
                     return
                 except discord.NotFound:
                     pass
-            message = await channel.send(embed=embed, view=ReviewPanel(self),
+            message = await channel.send(embed=embed, view=view,
                                          allowed_mentions=discord.AllowedMentions.none())
             with closing(self.store.connect()) as db:
                 db.execute("UPDATE check_cases SET review_message_id=? WHERE id=?", (message.id, case_id))
