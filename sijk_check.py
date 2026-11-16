@@ -54,7 +54,8 @@ class CheckStore:
                 CREATE TABLE IF NOT EXISTS check_settings (
                     guild_id INTEGER PRIMARY KEY,
                     public_channel_id INTEGER,
-                    review_channel_id INTEGER
+                    review_channel_id INTEGER,
+                    reviewer_role_id INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS check_cases (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,6 +94,9 @@ class CheckStore:
                     created_at TEXT NOT NULL
                 );
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(check_settings)")}
+            if "reviewer_role_id" not in columns:
+                db.execute("ALTER TABLE check_settings ADD COLUMN reviewer_role_id INTEGER")
             db.commit()
 
     def connect(self):
@@ -105,12 +109,13 @@ class CheckStore:
         with closing(self.connect()) as db:
             return db.execute("SELECT * FROM check_settings WHERE guild_id=?", (guild_id,)).fetchone()
 
-    def configure(self, guild_id: int, public_id: int, review_id: int):
+    def configure(self, guild_id: int, public_id: int, review_id: int, reviewer_role_id: int):
         with closing(self.connect()) as db:
-            db.execute("""INSERT INTO check_settings VALUES(?,?,?)
+            db.execute("""INSERT INTO check_settings (guild_id,public_channel_id,review_channel_id,reviewer_role_id) VALUES(?,?,?,?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                 public_channel_id=excluded.public_channel_id,
-                review_channel_id=excluded.review_channel_id""", (guild_id, public_id, review_id))
+                review_channel_id=excluded.review_channel_id,
+                reviewer_role_id=excluded.reviewer_role_id""", (guild_id, public_id, review_id, reviewer_role_id))
             db.commit()
 
     def submit(self, guild_id: int, user_id: int, riot_id: str, reason: str, links: list[str]):
@@ -230,7 +235,8 @@ def _check_review_allowed(cog, interaction):
     settings = cog.store.settings(interaction.guild.id) if interaction.guild else None
     return bool(settings and interaction.channel_id == settings["review_channel_id"]
                 and isinstance(interaction.user, discord.Member)
-                and interaction.user.guild_permissions.administrator)
+                and settings['reviewer_role_id']
+                and any(role.id == settings['reviewer_role_id'] for role in interaction.user.roles))
 
 
 class DecisionModal(discord.ui.Modal, title="SIJK CHECK • Решение"):
@@ -409,16 +415,18 @@ class SijkCheck(commands.Cog):
     @app_commands.command(name="check_setup", description="Настроить каналы SIJK CHECK")
     @app_commands.default_permissions(administrator=True)
     async def check_setup(self, interaction: discord.Interaction,
-                          public_channel: discord.TextChannel, review_channel: discord.TextChannel):
+                          public_channel: discord.TextChannel, review_channel: discord.TextChannel,
+                          reviewer_role: discord.Role):
         if not interaction.guild or not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("Нужны права администратора.", ephemeral=True)
             return
         if public_channel.id == review_channel.id:
             await interaction.response.send_message("Публичный и закрытый каналы должны отличаться.", ephemeral=True)
             return
-        self.store.configure(interaction.guild.id, public_channel.id, review_channel.id)
+        self.store.configure(interaction.guild.id, public_channel.id, review_channel.id, reviewer_role.id)
         await interaction.response.send_message(
             f"Каналы сохранены: {public_channel.mention} и {review_channel.mention}. "
+            f"Проверяющие: {reviewer_role.mention}. "
             "Проверь, что закрытый канал недоступен обычным участникам.", ephemeral=True)
 
     @app_commands.command(name="check_panel", description="Опубликовать панель заявок SIJK CHECK")
