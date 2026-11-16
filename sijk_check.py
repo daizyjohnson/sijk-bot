@@ -591,6 +591,103 @@ class SijkCheck(commands.Cog):
         view.add_item(discord.ui.Button(label="Чекнуть трекер", url=url, style=discord.ButtonStyle.link))
         await interaction.followup.send(embed=embed, view=view, file=file, ephemeral=False)
 
+    @app_commands.command(name="check_history", description="История рассмотрения игрока (роль проверяющего)")
+    @app_commands.describe(
+        riot_id="Riot ID в формате Ник#Тег",
+        page="Страница истории (по 8 событий)")
+    async def check_history(self, interaction: discord.Interaction, riot_id: str, page: int = 1):
+        if not _check_review_allowed(self, interaction):
+            await interaction.response.send_message(
+                "История доступна только проверяющим в закрытом канале заявок.", ephemeral=True)
+            return
+        try:
+            _, key = normalize_riot_id(riot_id)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        if page < 1:
+            await interaction.response.send_message("Номер страницы должен быть от 1.", ephemeral=True)
+            return
+        with closing(self.store.connect()) as db:
+            case = db.execute(
+                "SELECT * FROM check_cases WHERE guild_id=? AND riot_key=?",
+                (interaction.guild.id, key)).fetchone()
+            if case is None:
+                await interaction.response.send_message(
+                    "Заявок на этот Riot ID в архиве нет.", ephemeral=True)
+                return
+            total = db.execute(
+                "SELECT COUNT(*) FROM check_events WHERE case_id=?", (case["id"],)
+            ).fetchone()[0]
+            reporters = db.execute(
+                "SELECT COUNT(*) FROM check_reporters WHERE case_id=?", (case["id"],)
+            ).fetchone()[0]
+            evidence_count = db.execute(
+                "SELECT COUNT(*) FROM check_evidence WHERE case_id=?", (case["id"],)
+            ).fetchone()[0]
+            events = db.execute(
+                "SELECT * FROM check_events WHERE case_id=? ORDER BY created_at DESC, id DESC LIMIT 8 OFFSET ?",
+                (case["id"], (page - 1) * 8)).fetchall()
+
+        pages = max(1, (total + 7) // 8)
+        if page > pages:
+            await interaction.response.send_message(
+                f"Всего страниц: {pages}. Укажи страницу от 1 до {pages}.", ephemeral=True)
+            return
+        labels = {
+            "pending": "На рассмотрении",
+            "approved": "Добавлен в базу",
+            "approved_pending_sync": "Ожидает записи в базу",
+            "insufficient": "Недостаточно доказательств",
+            "rejected": "Отклонена",
+        }
+        actions = {
+            "report": "Новая заявка",
+            "supplement": "Дополнение доказательств",
+            "decision:insufficient": "Недостаточно доказательств",
+            "decision:rejected": "Отклонена",
+        }
+        blocks = []
+        for event in events:
+            action = event["event"]
+            if action.startswith("approved:"):
+                label = "Добавлен в базу"
+            else:
+                label = actions.get(action, "Событие")
+            stamp = event["created_at"][:16].replace("T", " ")
+            detail = discord.utils.escape_mentions(str(event["detail"] or "")).replace("\\n", " ")
+            if len(detail) > 220:
+                detail = detail[:217] + "..."
+            blocks.append(
+                f"**{stamp} UTC · {label}**\\n"
+                f"Участник: <@{event['user_id']}>"
+                + (f"\\n{detail}" if detail else "")
+            )
+        description = (
+            f"**{discord.utils.escape_markdown(case['riot_id'])}** · Дело #{case['id']}\\n"
+            f"Статус: **{labels.get(case['state'], 'Неизвестен')}**\\n"
+            f"Заявителей: **{reporters}** · Ссылок: **{evidence_count}**"
+        )
+        if case["reviewer_id"]:
+            description += f"\\nПроверяющий: <@{case['reviewer_id']}>"
+        if case["reviewer_comment"]:
+            comment = discord.utils.escape_mentions(str(case["reviewer_comment"]))[:400]
+            description += f"\\nКомментарий решения: {comment}"
+        embed = discord.Embed(
+            title="SIJK CHECK · ИСТОРИЯ ЗАЯВКИ",
+            description=description[:1900],
+            color=RED,
+        )
+        embed.add_field(
+            name="Хронология (сначала новые)",
+            value="\\n\\n".join(blocks)[:3900] or "Событий пока нет.",
+            inline=False,
+        )
+        embed.set_footer(text=f"Страница {page}/{pages} · Всего событий: {total}")
+        await interaction.response.send_message(
+            embed=embed, ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none())
+
     @app_commands.command(name="check", description="Проверить игрока по базе SIJK CHECK")
     @app_commands.describe(riot_id="Riot ID в формате Ник#Тег")
     async def check(self, interaction: discord.Interaction, riot_id: str):
