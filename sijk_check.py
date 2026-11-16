@@ -283,16 +283,16 @@ class EvidencePages(discord.ui.View):
         blocks = []
         for r in reporters[self.page * 3:self.page * 3 + 3]:
             links = [e["url"] for e in evidence if e["user_id"] == r["user_id"]]
-            block = (f"**Заявитель:** <@{r['user_id']}> (ID {r['user_id']})\\n"
-                     f"**Причина:** {discord.utils.escape_mentions(r['reason'])[:450]}\\n"
-                     f"**Дата:** {r['created_at'][:16]} UTC\\n"
-                     "**Доказательства:**\\n" +
-                     ("\\n".join(discord.utils.escape_mentions(u)[:220] for u in links[:8]) or "—"))
+            block = (f"**Заявитель:** <@{r['user_id']}> (ID {r['user_id']})\n"
+                     f"**Причина:** {discord.utils.escape_mentions(r['reason'])[:450]}\n"
+                     f"**Дата:** {r['created_at'][:16]} UTC\n"
+                     "**Доказательства:**\n" +
+                     ("\n".join(discord.utils.escape_mentions(u)[:220] for u in links[:8]) or "—"))
             if len(links) > 8:
-                block += f"\\n… ещё {len(links) - 8}"
+                block += f"\n… ещё {len(links) - 8}"
             blocks.append(block)
         embed = discord.Embed(title=f"SIJK CHECK • Дело #{self.case_id}",
-                              description="\\n\\n".join(blocks)[:3900] or "Пусто", color=RED)
+                              description="\n\n".join(blocks)[:3900] or "Пусто", color=RED)
         embed.set_footer(text=f"Страница {self.page + 1}/{pages} • Всего заявителей: {len(reporters)}")
         self.back.disabled = self.page == 0
         self.forward.disabled = self.page == pages - 1
@@ -383,8 +383,8 @@ class SijkCheck(commands.Cog):
         labels = {"pending": "На рассмотрении", "approved_pending_sync": "Ожидает внесения в базу",
                   "insufficient": "Недостаточно доказательств", "rejected": "Отклонена"}
         embed = discord.Embed(title="SIJK CHECK • " + labels.get(row["state"], "На рассмотрении"),
-                              description=f"**{discord.utils.escape_markdown(row['riot_id'])}**\\n"
-                              f"Уникальных заявителей: **{count}**\\n"
+                              description=f"**{discord.utils.escape_markdown(row['riot_id'])}**\n"
+                              f"Уникальных заявителей: **{count}**\n"
                               f"[Tracker.gg]({tracker_url(row['riot_id'])})", color=RED)
         if row["reviewer_comment"]:
             embed.add_field(name="Комментарий решения",
