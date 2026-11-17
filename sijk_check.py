@@ -189,8 +189,14 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         if outcome == "unchanged":
+            row, _ = self.cog.store.case(case_id)
+            closed = row["state"] not in ("pending", "approved_pending_sync")
             await interaction.response.send_message(
-                "Твоя заявка уже есть. Новых ссылок не обнаружено.", ephemeral=True)
+                "Это дело уже закрыто. Повторная отправка тех же ссылок не создаёт новую заявку. "
+                "Для повторного рассмотрения попроси проверяющего использовать /check_reopen."
+                if closed else
+                "Твоя заявка уже есть. Новых ссылок не обнаружено.",
+                ephemeral=True)
             return
         await interaction.response.send_message(
             "Доказательства добавлены к существующей заявке." if outcome == "supplement"
@@ -590,6 +596,56 @@ class SijkCheck(commands.Cog):
         url = tracker if isinstance(tracker, str) and tracker.startswith("https://tracker.gg/") else tracker_url(name)
         view.add_item(discord.ui.Button(label="Чекнуть трекер", url=url, style=discord.ButtonStyle.link))
         await interaction.followup.send(embed=embed, view=view, file=file, ephemeral=False)
+
+    @app_commands.command(name="check_reopen", description="Повторно открыть закрытое дело и восстановить карточку")
+    @app_commands.describe(riot_id="Riot ID игрока (Ник#Тег)")
+    async def check_reopen(self, interaction: discord.Interaction, riot_id: str):
+        if not _check_review_allowed(self, interaction):
+            await interaction.response.send_message(
+                "Команда доступна только проверяющим в закрытом канале заявок.", ephemeral=True)
+            return
+        try:
+            _, key = normalize_riot_id(riot_id)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(self.store.connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM check_cases WHERE guild_id=? AND riot_key=?",
+                (interaction.guild.id, key)).fetchone()
+            if row is None:
+                db.rollback()
+                await interaction.response.send_message(
+                    "Дело не найдено. Для новой заявки используй публичную панель.", ephemeral=True)
+                return
+            if row["state"] in ("pending", "approved_pending_sync"):
+                db.rollback()
+                await interaction.response.send_message(
+                    "Дело уже открыто. Восстанавливаю карточку, если она была удалена.",
+                    ephemeral=True)
+                await self.notify_review(interaction.guild, row["id"])
+                return
+            if row["state"] == "approved":
+                db.rollback()
+                await interaction.response.send_message(
+                    "Игрок уже добавлен в базу. Повторное рассмотрение требует отдельного решения, "
+                    "чтобы не расходиться с Google-таблицей.", ephemeral=True)
+                return
+            db.execute(
+                """UPDATE check_cases SET state='pending', reviewer_id=NULL,
+                   reviewer_comment=NULL, reviewed_at=NULL, updated_at=? WHERE id=?""",
+                (now, row["id"]))
+            db.execute(
+                "INSERT INTO check_events(case_id,user_id,event,detail,created_at) VALUES(?,?,?,?,?)",
+                (row["id"], interaction.user.id, "reopened",
+                 "Дело повторно открыто проверяющим; прежнее решение сохранено в истории.", now))
+            db.commit()
+        await interaction.response.send_message(
+            "Дело повторно открыто. Создаю или обновляю карточку в закрытом канале. "
+            "Предыдущие заявки, ссылки и решения остались в истории.", ephemeral=True)
+        await self.notify_review(interaction.guild, row["id"])
 
     @app_commands.command(name="check_history", description="История рассмотрения игрока (роль проверяющего)")
     @app_commands.describe(
