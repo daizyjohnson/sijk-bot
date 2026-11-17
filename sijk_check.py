@@ -232,7 +232,7 @@ class MissingPlayerView(discord.ui.View):
         super().__init__(timeout=600)
         self.cog, self.riot_id = cog, riot_id
 
-    @discord.ui.button(label="Оформить заявку", style=discord.ButtonStyle.danger, emoji="📝")
+    @discord.ui.button(label="Оформить заявку", style=discord.ButtonStyle.primary, emoji="📝")
     async def report(self, interaction, button):
         if not self.cog.in_public_channel(interaction):
             await interaction.response.send_message("Открой канал SIJK CHECK.", ephemeral=True)
@@ -570,11 +570,14 @@ class SijkCheck(commands.Cog):
                 "Попробуй позже.", ephemeral=True)
             return
         if not record:
-            embed = discord.Embed(title="SIJK CHECK • Нет информации",
-                description=f"**{discord.utils.escape_markdown(riot_id)}**\n\n"
-                "У SIJK пока нет опубликованной оценки этого игрока. "
-                "Отсутствие записи ничего не говорит о его поведении.",
-                color=RED)
+            embed = discord.Embed(
+                title=discord.utils.escape_markdown(riot_id),
+                description=(
+                    "У SIJK пока нет опубликованной оценки этого игрока. "
+                    "Отсутствие записи ничего не говорит о его поведении."
+                ),
+                color=discord.Color.from_rgb(128, 128, 128),
+            )
             await interaction.followup.send(embed=embed, view=MissingPlayerView(self, riot_id),
                                             ephemeral=True)
             return
