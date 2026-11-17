@@ -26,6 +26,7 @@ from notify_roles import setup_notify_roles
 from panel_editor import setup_panel_editor
 from rank_roles import setup_rank_roles
 from sijk_check import setup_sijk_check
+from member_stats import setup_member_stats
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
@@ -208,6 +209,7 @@ class SijkBot(commands.Bot):
         await setup_panel_editor(self, DB_PATH)
         await setup_rank_roles(self, DB_PATH)
         await setup_sijk_check(self, DB_PATH)
+        await setup_member_stats(self, DB_PATH)
         if DEV_GUILD_ID:
             guild = discord.Object(id=DEV_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
