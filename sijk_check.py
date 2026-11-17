@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import logging
 from io import BytesIO
 import sqlite3
 from contextlib import closing
@@ -15,6 +16,7 @@ from discord.ext import commands
 from sijk_check_sheets import CheckSheet, CheckSheetError
 from sijk_check_visuals import meter_png, rating_color
 
+LOG = logging.getLogger('sijk.check')
 RED = 0xB8202B
 RIOT_ID_PATTERN = re.compile(r"^([^#\r\n]{1,32})#([^#\r\n]{1,16})$")
 
@@ -198,10 +200,16 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
                 "Твоя заявка уже есть. Новых ссылок не обнаружено.",
                 ephemeral=True)
             return
-        await interaction.response.send_message(
-            "Доказательства добавлены к существующей заявке." if outcome == "supplement"
-            else "Заявка принята! Она сохранена в SIJK CHECK.", ephemeral=True)
-        await self.cog.notify_review(interaction.guild, case_id)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        delivered = await self.cog.notify_review(interaction.guild, case_id)
+        if delivered:
+            message = ("Доказательства добавлены к существующей заявке." if outcome == "supplement"
+                       else "Заявка принята! Она сохранена в SIJK CHECK и передана проверяющим.")
+        else:
+            message = ("Заявка сохранена в базе, но карточка не появилась у модераторов. "
+                       "Попроси проверяющего выполнить /check_reopen с этим Riot ID. "
+                       "Администратор может проверить причину в логах Bothost.")
+        await interaction.followup.send(message, ephemeral=True)
 
 
 class LookupModal(discord.ui.Modal, title="SIJK CHECK • Проверить игрока"):
@@ -509,7 +517,9 @@ class SijkCheck(commands.Cog):
         settings = self.store.settings(guild.id)
         channel = guild.get_channel(settings["review_channel_id"]) if settings else None
         if not isinstance(channel, discord.TextChannel):
-            return
+            LOG.error("Review channel unavailable: guild=%s case=%s channel=%s",
+                      guild.id, case_id, settings["review_channel_id"] if settings else None)
+            return False
         labels = {"pending": "На рассмотрении", "approved": "Добавлен в базу", "approved_pending_sync": "Ожидает внесения в базу",
                   "insufficient": "Недостаточно доказательств", "rejected": "Отклонена"}
         embed = discord.Embed(title="SIJK CHECK • " + labels.get(row["state"], "На рассмотрении"),
@@ -530,7 +540,7 @@ class SijkCheck(commands.Cog):
                 try:
                     message = await channel.fetch_message(row["review_message_id"])
                     await message.edit(embed=embed, view=view)
-                    return
+                    return True
                 except discord.NotFound:
                     pass
             message = await channel.send(embed=embed, view=view,
@@ -538,8 +548,11 @@ class SijkCheck(commands.Cog):
             with closing(self.store.connect()) as db:
                 db.execute("UPDATE check_cases SET review_message_id=? WHERE id=?", (message.id, case_id))
                 db.commit()
-        except discord.HTTPException:
-            pass
+            return True
+        except (discord.HTTPException, discord.Forbidden) as exc:
+            LOG.exception("Cannot publish SIJK CHECK review: guild=%s case=%s channel=%s",
+                          guild.id, case_id, channel.id)
+            return False
 
     async def lookup(self, interaction: discord.Interaction, riot_id: str):
         try:
