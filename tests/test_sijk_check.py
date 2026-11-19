@@ -52,6 +52,53 @@ class TestCheck(unittest.TestCase):
             store.submit(1, 55, "Subset#Aura", "again", ["https://example.com/4"])
             self.assertEqual(store.case(case)[0]["state"], "approved")
 
+    def test_closed_case_reopens_and_approved_case_preserved(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = CheckStore(Path(folder) / "test.sqlite3")
+            case, _ = store.submit(1, 10, "Player#Test", "first", ["https://example.com/a"])
+            with store.connect() as db:
+                db.execute(
+                    "UPDATE check_cases SET state='rejected', reviewer_comment='Old decision' WHERE id=?",
+                    (case,),
+                )
+                db.execute(
+                    "INSERT INTO check_events(case_id,user_id,event,detail,created_at) VALUES(?,?,?,?,?)",
+                    (case, 1, "decision:rejected", "Old decision", "2026-11-01T00:00:00"),
+                )
+                db.commit()
+            self.assertEqual(
+                store.submit(1, 11, "player#test", "second", ["https://example.com/b"]),
+                (case, "reopened"),
+            )
+            row, count = store.case(case)
+            self.assertEqual((row["state"], count), ("pending", 2))
+            self.assertIsNone(row["reviewer_comment"])
+            with store.connect() as db:
+                events = db.execute(
+                    "SELECT event FROM check_events WHERE case_id=? ORDER BY id", (case,)
+                ).fetchall()
+            self.assertIn("auto_reopened", [event["event"] for event in events])
+            self.assertIn("decision:rejected", [event["event"] for event in events])
+            self.assertEqual(
+                store.submit(1, 11, "player#test", "duplicate", ["https://example.com/b"])[1],
+                "unchanged",
+            )
+            with store.connect() as db:
+                db.execute(
+                    "UPDATE check_cases SET state='approved' WHERE id=?", (case,)
+                )
+                db.commit()
+            self.assertEqual(
+                store.submit(1, 12, "player#test", "new", ["https://example.com/c"])[1],
+                "approved_update",
+            )
+            self.assertEqual(store.case(case)[0]["state"], "approved")
+            with store.connect() as db:
+                event = db.execute(
+                    "SELECT event FROM check_events WHERE case_id=? ORDER BY id DESC LIMIT 1", (case,)
+                ).fetchone()
+            self.assertEqual(event["event"], "approved_update")
+
     def test_public_report_layout_and_privacy(self):
         case = {"id": 9, "riot_id": "hekilopik#2624", "state": "rejected"}
         embed = public_report_embed(case, 2)

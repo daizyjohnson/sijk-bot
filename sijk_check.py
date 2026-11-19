@@ -189,12 +189,35 @@ class CheckStore:
             if previous and not new_links:
                 db.commit()
                 return case["id"], "unchanged"
-            # Keep reviewed decisions intact when new evidence is submitted.
             db.execute("UPDATE check_cases SET updated_at=? WHERE id=?", (now, case["id"]))
             db.execute("INSERT INTO check_events(case_id,user_id,event,detail,created_at) VALUES(?,?,?,?,?)",
                        (case["id"], user_id, "supplement" if previous else "report", reason, now))
+            outcome = "supplement" if previous else "new"
+            if case["state"] in ("insufficient", "rejected"):
+                # Reopen automatically on genuinely new evidence or a new reporter.
+                # The earlier decision and reviewer comment stay in check_events.
+                db.execute(
+                    """UPDATE check_cases SET state='pending', reviewer_id=NULL,
+                       reviewer_comment=NULL, reviewed_at=NULL, updated_at=? WHERE id=?""",
+                    (now, case["id"]),
+                )
+                db.execute(
+                    "INSERT INTO check_events(case_id,user_id,event,detail,created_at) VALUES(?,?,?,?,?)",
+                    (case["id"], user_id, "auto_reopened",
+                     "Новые материалы после закрытия; прежний статус: " + case["state"], now),
+                )
+                outcome = "reopened"
+            elif case["state"] == "approved":
+                # Existing Google Sheets assessment remains published; notify reviewers
+                # without pretending a new approval was performed.
+                db.execute(
+                    "INSERT INTO check_events(case_id,user_id,event,detail,created_at) VALUES(?,?,?,?,?)",
+                    (case["id"], user_id, "approved_update",
+                     "Новое обращение после публикации оценки; пересмотр не выполнен.", now),
+                )
+                outcome = "approved_update"
             db.commit()
-            return case["id"], "supplement" if previous else "new"
+            return case["id"], outcome
 
     def case(self, case_id: int):
         with closing(self.connect()) as db:
@@ -241,8 +264,8 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
             closed = row["state"] not in ("pending", "approved_pending_sync")
             await interaction.response.send_message(
                 f"**Твоё обращение №{case_id}.** " +
-                ("Дело уже закрыто. Повторная отправка тех же ссылок не создаёт новую заявку. "
-                 "Для повторного рассмотрения попроси проверяющего использовать /check_reopen."
+                ("Дело уже закрыто. Повторная отправка тех же ссылок ничего не меняет. "
+                 "Для автоматического повторного рассмотрения нужны новые доказательства."
                  if closed else "Твоя заявка уже есть. Новых ссылок не обнаружено.")
                 + "\nНайти своё обращение можно через кнопку «Мои заявки».",
                 ephemeral=True)
@@ -251,8 +274,22 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
         delivered = await self.cog.notify_review(interaction.guild, case_id)
         if delivered:
             await self.cog.notify_public_report(interaction.guild, case_id)
-            message = ("Доказательства добавлены к существующей заявке." if outcome == "supplement"
-                       else "Заявка принята! Она сохранена в SIJK CHECK и передана проверяющим.")
+            if outcome in ("reopened", "approved_update"):
+                await self.cog.notify_report_activity(interaction.guild, case_id, outcome)
+            messages = {
+                "supplement": "Доказательства добавлены к существующей заявке.",
+                "reopened": (
+                    "Новые материалы сохранены. Закрытое дело автоматически открыто повторно "
+                    "и отправлено модераторам на рассмотрение."
+                ),
+                "approved_update": (
+                    "Новое обращение сохранено. Игрок уже есть в опубликованной базе, "
+                    "поэтому оценка не сброшена; модераторы получили отдельное уведомление."
+                ),
+            }
+            message = messages.get(
+                outcome, "Заявка принята! Она сохранена в SIJK CHECK и передана проверяющим."
+            )
         else:
             message = ("Заявка сохранена в базе, но карточка не появилась у модераторов. "
                        "Попроси проверяющего выполнить /check_reopen с этим Riot ID. "
@@ -570,6 +607,33 @@ class ReviewPanel(discord.ui.View):
             await interaction.response.send_modal(DecisionModal(self.cog, row["id"], "rejected"))
 
 
+class ClosedReviewPanel(discord.ui.View):
+    """Persistent evidence access for already reviewed cases, including approved."""
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Заявители и доказательства",
+        style=discord.ButtonStyle.secondary,
+        custom_id="sijk_check:review:closed_evidence",
+    )
+    async def evidence(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _check_review_allowed(self.cog, interaction):
+            await interaction.response.send_message("Нет доступа к доказательствам.", ephemeral=True)
+            return
+        with closing(self.cog.store.connect()) as db:
+            row = db.execute(
+                "SELECT id FROM check_cases WHERE guild_id=? AND review_message_id=?",
+                (interaction.guild.id, interaction.message.id),
+            ).fetchone()
+        if not row:
+            await interaction.response.send_message("Дело не найдено.", ephemeral=True)
+            return
+        view = EvidencePages(self.cog, row["id"], interaction.user.id)
+        await interaction.response.send_message(embed=view.render(), view=view, ephemeral=True)
+
+
 class SijkCheck(commands.Cog):
     def __init__(self, bot: commands.Bot, db_path: Path):
         self.bot = bot
@@ -580,6 +644,7 @@ class SijkCheck(commands.Cog):
         self._cleanup_tasks: set[asyncio.Task] = set()
         self.bot.add_view(CheckPanel(self))
         self.bot.add_view(ReviewPanel(self))
+        self.bot.add_view(ClosedReviewPanel(self))
 
     def in_public_channel(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild:
@@ -638,6 +703,58 @@ class SijkCheck(commands.Cog):
                 LOG.exception("SIJK CHECK public report delivery failed: case=%s", case_id)
                 return False
 
+    async def notify_report_activity(
+        self, guild: discord.Guild, case_id: int, outcome: str
+    ) -> bool:
+        """Alert the private review channel about submissions after a closed decision."""
+        settings = self.store.settings(guild.id)
+        channel = guild.get_channel(settings["review_channel_id"]) if settings else None
+        if not isinstance(channel, discord.TextChannel):
+            LOG.error("Cannot notify reviewers for case %s: review channel not found", case_id)
+            return False
+        row, count = self.store.case(case_id)
+        reopened = outcome == "reopened"
+        title = (
+            "🔔 SIJK CHECK • ПОВТОРНО ОТКРЫТО"
+            if reopened else "🔔 SIJK CHECK • НОВЫЕ МАТЕРИАЛЫ ПО ИГРОКУ В БАЗЕ"
+        )
+        description = (
+            f"**{discord.utils.escape_markdown(row['riot_id'])}** · Дело №{case_id}\\n"
+            f"Заявителей: **{count}**\\n"
+            + (
+                "По ранее закрытому делу поступили новые материалы. "
+                "**Статус автоматически изменён на «На рассмотрении»**."
+                if reopened else
+                "Поступили новые материалы после публикации оценки. "
+                "**Оценка в базе сохранена**, требуется внимание проверяющих."
+            )
+        )
+        embed = discord.Embed(title=title, description=description, color=RED)
+        if row["review_message_id"]:
+            link = (f"https://discord.com/channels/{guild.id}/"
+                    f"{channel.id}/{row['review_message_id']}")
+            embed.add_field(name="Карточка для модераторов", value=f"[Открыть дело]({link})")
+        role_id = settings["reviewer_role_id"] if settings else None
+        try:
+            # Mention the reviewer role only on this exceptional closed-case event.
+            await channel.send(
+                content=f"<@&{role_id}>" if role_id else None,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    everyone=False, users=False,
+                    roles=[discord.Object(id=role_id)] if role_id else False,
+                ),
+            )
+            return True
+        except discord.HTTPException:
+            LOG.warning("Reviewer role ping failed, retrying without mention: case=%s", case_id)
+            try:
+                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                return True
+            except discord.HTTPException:
+                LOG.exception("Could not send private activity alert for case %s", case_id)
+                return False
+
     async def notify_review(self, guild: discord.Guild, case_id: int):
         row, count = self.store.case(case_id)
         settings = self.store.settings(guild.id)
@@ -658,9 +775,9 @@ class SijkCheck(commands.Cog):
         if row["reviewer_id"] and row["state"] not in ("pending", "approved_pending_sync"):
             embed.add_field(name="Проверяющий", value=f"<@{row['reviewer_id']}>", inline=False)
         embed.set_footer(text=f"Дело #{case_id}")
-        # A closed case is an archive card, not an actionable review form.
-        # Keep buttons only while pending or when a failed Sheets write needs retry.
-        view = ReviewPanel(self) if row["state"] in ("pending", "approved_pending_sync") else None
+        # Closed reviews expose evidence, but never show decision buttons.
+        view = (ReviewPanel(self) if row["state"] in ("pending", "approved_pending_sync")
+                else ClosedReviewPanel(self))
         try:
             if row["review_message_id"]:
                 try:
@@ -844,6 +961,8 @@ class SijkCheck(commands.Cog):
             "rejected": "Отклонена",
         }
         actions = {
+            "auto_reopened": "Автоматически открыта повторно",
+            "approved_update": "Новые материалы после публикации оценки",
             "report": "Новая заявка",
             "supplement": "Дополнение доказательств",
             "decision:insufficient": "Недостаточно доказательств",
