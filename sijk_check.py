@@ -274,8 +274,11 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
         delivered = await self.cog.notify_review(interaction.guild, case_id)
         if delivered:
             await self.cog.notify_public_report(interaction.guild, case_id)
+            alert_delivered = True
             if outcome in ("reopened", "approved_update"):
-                await self.cog.notify_report_activity(interaction.guild, case_id, outcome)
+                alert_delivered = await self.cog.notify_report_activity(
+                    interaction.guild, case_id, outcome
+                )
             messages = {
                 "supplement": "Доказательства добавлены к существующей заявке.",
                 "reopened": (
@@ -284,12 +287,15 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
                 ),
                 "approved_update": (
                     "Новое обращение сохранено. Игрок уже есть в опубликованной базе, "
-                    "поэтому оценка не сброшена; модераторы получили отдельное уведомление."
+                    "поэтому оценка не сброшена; модераторы смогут изучить новые материалы."
                 ),
             }
             message = messages.get(
                 outcome, "Заявка принята! Она сохранена в SIJK CHECK и передана проверяющим."
             )
+            if not alert_delivered:
+                message += (" Отдельное уведомление модераторам отправить не удалось, "
+                            "но карточка дела обновлена.")
         else:
             message = ("Заявка сохранена в базе, но карточка не появилась у модераторов. "
                        "Попроси проверяющего выполнить /check_reopen с этим Riot ID. "
@@ -719,8 +725,8 @@ class SijkCheck(commands.Cog):
             if reopened else "🔔 SIJK CHECK • НОВЫЕ МАТЕРИАЛЫ ПО ИГРОКУ В БАЗЕ"
         )
         description = (
-            f"**{discord.utils.escape_markdown(row['riot_id'])}** · Дело №{case_id}\\n"
-            f"Заявителей: **{count}**\\n"
+            f"**{discord.utils.escape_markdown(row['riot_id'])}** · Дело №{case_id}\n"
+            f"Заявителей: **{count}**\n"
             + (
                 "По ранее закрытому делу поступили новые материалы. "
                 "**Статус автоматически изменён на «На рассмотрении»**."
