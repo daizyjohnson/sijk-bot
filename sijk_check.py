@@ -1,6 +1,7 @@
 """SIJK CHECK: submissions, evidence history and a persistent public entry panel."""
 from __future__ import annotations
 
+import asyncio
 import re
 import logging
 from io import BytesIO
@@ -501,8 +502,8 @@ class SijkCheck(commands.Cog):
         self.bot = bot
         self.store = CheckStore(db_path)
         self.sheet = CheckSheet()
-        import asyncio
         self.approval_lock = asyncio.Lock()
+        self._cleanup_tasks: set[asyncio.Task] = set()
         self.bot.add_view(CheckPanel(self))
         self.bot.add_view(ReviewPanel(self))
 
@@ -511,6 +512,24 @@ class SijkCheck(commands.Cog):
             return False
         settings = self.store.settings(interaction.guild.id)
         return bool(settings and interaction.channel_id == settings["public_channel_id"])
+
+    def _schedule_lookup_cleanup(self, interaction: discord.Interaction, delay: int = 180):
+        async def cleanup():
+            try:
+                await asyncio.sleep(delay)
+                await interaction.delete_original_response()
+            except (discord.NotFound, discord.Forbidden):
+                pass
+            except discord.HTTPException:
+                LOG.warning("Failed to delete ephemeral lookup", exc_info=True)
+
+        task = asyncio.create_task(cleanup())
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
+
+    def cog_unload(self):
+        for task in self._cleanup_tasks:
+            task.cancel()
 
     async def notify_review(self, guild: discord.Guild, case_id: int):
         row, count = self.store.case(case_id)
@@ -560,14 +579,14 @@ class SijkCheck(commands.Cog):
         except ValueError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
-        # The lookup is public; validation errors and reporting remain private.
-        await interaction.response.defer(ephemeral=False, thinking=True)
+        # Lookups are private and temporary so the panel stays visible.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             record = await self.sheet.find(key)
         except CheckSheetError:
-            await interaction.followup.send(
-                "База временно недоступна. Это не означает, что игрок отсутствует в ней. "
-                "Попробуй позже.", ephemeral=True)
+            await interaction.edit_original_response(
+                content="База временно недоступна. Это не означает, что игрок отсутствует в ней. Попробуй позже.")
+            self._schedule_lookup_cleanup(interaction)
             return
         if not record:
             embed = discord.Embed(
@@ -578,8 +597,8 @@ class SijkCheck(commands.Cog):
                 ),
                 color=discord.Color.from_rgb(128, 128, 128),
             )
-            await interaction.followup.send(embed=embed, view=MissingPlayerView(self, riot_id),
-                                            ephemeral=True)
+            await interaction.edit_original_response(embed=embed, view=MissingPlayerView(self, riot_id))
+            self._schedule_lookup_cleanup(interaction)
             return
         name, score, status, tracker, evidence, comment, date = record
         try:
@@ -611,7 +630,9 @@ class SijkCheck(commands.Cog):
         view = discord.ui.View()
         url = tracker if isinstance(tracker, str) and tracker.startswith("https://tracker.gg/") else tracker_url(name)
         view.add_item(discord.ui.Button(label="Чекнуть трекер", url=url, style=discord.ButtonStyle.link))
-        await interaction.followup.send(embed=embed, view=view, file=file, ephemeral=False)
+        await interaction.edit_original_response(
+            embed=embed, view=view, attachments=[file] if file else [])
+        self._schedule_lookup_cleanup(interaction)
 
     @app_commands.command(name="check_reopen", description="Повторно открыть закрытое дело и восстановить карточку")
     @app_commands.describe(riot_id="Riot ID игрока (Ник#Тег)")
@@ -785,6 +806,38 @@ class SijkCheck(commands.Cog):
             f"Каналы сохранены: {public_channel.mention} и {review_channel.mention}. "
             f"Проверяющие: {reviewer_role.mention}. "
             "Проверь, что закрытый канал недоступен обычным участникам.", ephemeral=True)
+
+    @app_commands.command(name="check_cleanup", description="Убрать старые публичные карточки /check")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def check_cleanup(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("Нужны права администратора.", ephemeral=True)
+            return
+        if not self.in_public_channel(interaction):
+            await interaction.response.send_message("Запусти в канале WINTRADE-CHECK.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        deleted = 0
+        async for message in interaction.channel.history(limit=500):
+            if message.author.id != self.bot.user.id or not message.embeds:
+                continue
+            if any(embed.title == "ПРОВЕРКА НА ВИНТРЕЙД" for embed in message.embeds):
+                continue
+            if not any(
+                ("У SIJK пока нет опубликованной оценки" in (embed.description or ""))
+                or ((embed.footer.text or "") == "Субъективная оценка. Не доказательство нарушения правил.")
+                for embed in message.embeds
+            ):
+                continue
+            try:
+                await message.delete()
+                deleted += 1
+            except discord.HTTPException:
+                LOG.warning("Failed to delete old lookup %s", message.id, exc_info=True)
+        await interaction.followup.send(
+            f"Убрано старых карточек: {deleted}. Главная панель сохранена. "
+            "Проверены последние 500 сообщений.", ephemeral=True)
 
     @app_commands.command(name="check_panel", description="Опубликовать панель заявок SIJK CHECK")
     @app_commands.default_permissions(administrator=True)
