@@ -103,6 +103,11 @@ class CheckStore:
             columns = {row[1] for row in db.execute("PRAGMA table_info(check_settings)")}
             if "reviewer_role_id" not in columns:
                 db.execute("ALTER TABLE check_settings ADD COLUMN reviewer_role_id INTEGER")
+            if "feed_channel_id" not in columns:
+                db.execute("ALTER TABLE check_settings ADD COLUMN feed_channel_id INTEGER")
+            case_columns = {row[1] for row in db.execute("PRAGMA table_info(check_cases)")}
+            if "feed_message_id" not in case_columns:
+                db.execute("ALTER TABLE check_cases ADD COLUMN feed_message_id INTEGER")
             db.commit()
 
     def connect(self):
@@ -122,6 +127,18 @@ class CheckStore:
                 public_channel_id=excluded.public_channel_id,
                 review_channel_id=excluded.review_channel_id,
                 reviewer_role_id=excluded.reviewer_role_id""", (guild_id, public_id, review_id, reviewer_role_id))
+            db.commit()
+
+    def set_feed_channel(self, guild_id: int, channel_id: int):
+        with closing(self.connect()) as db:
+            db.execute("INSERT OR IGNORE INTO check_settings(guild_id) VALUES(?)", (guild_id,))
+            previous = db.execute(
+                "SELECT feed_channel_id FROM check_settings WHERE guild_id=?", (guild_id,)
+            ).fetchone()
+            if previous and previous["feed_channel_id"] != channel_id:
+                db.execute("UPDATE check_cases SET feed_message_id=NULL WHERE guild_id=?", (guild_id,))
+            db.execute("UPDATE check_settings SET feed_channel_id=? WHERE guild_id=?",
+                       (channel_id, guild_id))
             db.commit()
 
     def submit(self, guild_id: int, user_id: int, riot_id: str, reason: str, links: list[str]):
@@ -204,6 +221,7 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
         await interaction.response.defer(ephemeral=True, thinking=True)
         delivered = await self.cog.notify_review(interaction.guild, case_id)
         if delivered:
+            await self.cog.notify_public_report(interaction.guild, case_id)
             message = ("Доказательства добавлены к существующей заявке." if outcome == "supplement"
                        else "Заявка принята! Она сохранена в SIJK CHECK и передана проверяющим.")
         else:
@@ -323,6 +341,7 @@ class DecisionModal(discord.ui.Modal, title="SIJK CHECK • Решение"):
             if self.state == "approved_pending_sync" else "Решение сохранено, комментарий виден заявителям.",
             ephemeral=True)
         await self.cog.notify_review(interaction.guild, self.case_id)
+        await self.cog.notify_public_report(interaction.guild, self.case_id)
 
 
 class ApprovalModal(discord.ui.Modal, title="SIJK CHECK • Добавить в базу"):
@@ -380,6 +399,7 @@ class ApprovalModal(discord.ui.Modal, title="SIJK CHECK • Добавить в 
                     "Google Sheets не подтвердил запись. Дело сохранено как ожидающее синхронизации. "
                     "Повтори «Добавить в базу» позже.", ephemeral=True)
                 await self.cog.notify_review(interaction.guild, self.case_id)
+                await self.cog.notify_public_report(interaction.guild, self.case_id)
                 return
             with closing(self.cog.store.connect()) as db:
                 db.execute("""UPDATE check_cases SET state='approved',
@@ -394,6 +414,7 @@ class ApprovalModal(discord.ui.Modal, title="SIJK CHECK • Добавить в 
                 else "Игрок уже есть в таблице — существующая оценка не изменена. "
                      "Дело помечено как рассмотренное.", ephemeral=True)
             await self.cog.notify_review(interaction.guild, self.case_id)
+            await self.cog.notify_public_report(interaction.guild, self.case_id)
 
 
 class EvidencePages(discord.ui.View):
@@ -503,6 +524,7 @@ class SijkCheck(commands.Cog):
         self.store = CheckStore(db_path)
         self.sheet = CheckSheet()
         self.approval_lock = asyncio.Lock()
+        self.feed_lock = asyncio.Lock()
         self._cleanup_tasks: set[asyncio.Task] = set()
         self.bot.add_view(CheckPanel(self))
         self.bot.add_view(ReviewPanel(self))
@@ -530,6 +552,55 @@ class SijkCheck(commands.Cog):
     def cog_unload(self):
         for task in self._cleanup_tasks:
             task.cancel()
+
+    async def notify_public_report(self, guild: discord.Guild, case_id: int) -> bool:
+        """Publish a neutral public status: no reporter identities, reasons or evidence."""
+        settings = self.store.settings(guild.id)
+        if not settings or not settings["feed_channel_id"]:
+            return False
+        channel = guild.get_channel(settings["feed_channel_id"])
+        if not isinstance(channel, discord.TextChannel):
+            LOG.error("Missing SIJK CHECK public report channel %s in guild %s",
+                      settings["feed_channel_id"], guild.id)
+            return False
+        row, count = self.store.case(case_id)
+        states = {
+            "pending": "На рассмотрении",
+            "approved": "Оценка опубликована",
+            "approved_pending_sync": "Ожидает публикации оценки",
+            "insufficient": "Недостаточно доказательств",
+            "rejected": "Заявка отклонена",
+        }
+        embed = discord.Embed(
+            title=f"SIJK CHECK • Обращение #{case_id}",
+            description=(
+                f"**Riot ID:** {discord.utils.escape_markdown(row['riot_id'])}\n"
+                f"**Статус:** {states.get(row['state'], 'На рассмотрении')}\n"
+                f"**Уникальных заявителей:** {count}\n\n"
+                "*Подача заявки не доказывает нарушение правил игроком.*"
+            ),
+            color=discord.Color.from_rgb(128, 128, 128),
+        )
+        async with self.feed_lock:
+            # Re-read the message ID to avoid duplicate posts from simultaneous reports.
+            row, _ = self.store.case(case_id)
+            try:
+                if row["feed_message_id"]:
+                    try:
+                        message = await channel.fetch_message(row["feed_message_id"])
+                        await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                        return True
+                    except discord.NotFound:
+                        pass
+                message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                with closing(self.store.connect()) as db:
+                    db.execute("UPDATE check_cases SET feed_message_id=? WHERE id=?",
+                               (message.id, case_id))
+                    db.commit()
+                return True
+            except discord.HTTPException:
+                LOG.exception("SIJK CHECK public report delivery failed: case=%s", case_id)
+                return False
 
     async def notify_review(self, guild: discord.Guild, case_id: int):
         row, count = self.store.case(case_id)
@@ -663,6 +734,7 @@ class SijkCheck(commands.Cog):
                     "Дело уже открыто. Восстанавливаю карточку, если она была удалена.",
                     ephemeral=True)
                 await self.notify_review(interaction.guild, row["id"])
+                await self.notify_public_report(interaction.guild, row["id"])
                 return
             if row["state"] == "approved":
                 db.rollback()
@@ -683,6 +755,7 @@ class SijkCheck(commands.Cog):
             "Дело повторно открыто. Создаю или обновляю карточку в закрытом канале. "
             "Предыдущие заявки, ссылки и решения остались в истории.", ephemeral=True)
         await self.notify_review(interaction.guild, row["id"])
+        await self.notify_public_report(interaction.guild, row["id"])
 
     @app_commands.command(name="check_history", description="История рассмотрения игрока (роль проверяющего)")
     @app_commands.describe(
@@ -806,6 +879,31 @@ class SijkCheck(commands.Cog):
             f"Каналы сохранены: {public_channel.mention} и {review_channel.mention}. "
             f"Проверяющие: {reviewer_role.mention}. "
             "Проверь, что закрытый канал недоступен обычным участникам.", ephemeral=True)
+
+    @app_commands.command(name="check_feed_setup", description="Выбрать публичный канал статусов заявок")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    @app_commands.describe(channel="Канал для публичных статусов без доказательств и имён заявителей")
+    async def check_feed_setup(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not interaction.guild or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("Нужны права администратора.", ephemeral=True)
+            return
+        settings = self.store.settings(interaction.guild.id)
+        if settings is None:
+            await interaction.response.send_message("Сначала выполни /check_setup.", ephemeral=True)
+            return
+        if channel.id in (settings["public_channel_id"], settings["review_channel_id"]):
+            await interaction.response.send_message(
+                "Лента должна быть отдельным каналом, не CHECK и не модераторским.", ephemeral=True)
+            return
+        self.store.set_feed_channel(interaction.guild.id, channel.id)
+        await interaction.response.send_message(
+            f"Публичная лента подключена: {channel.mention}. "
+            "Новые обращения и изменения статусов будут отображаться здесь. "
+            "Сведения заявителей и доказательства останутся у модераторов. "
+            "Старые тестовые заявки автоматически не публикуются. "
+            "Убедись, что этот канал открыт для участников.",
+            ephemeral=True)
 
     @app_commands.command(name="check_cleanup", description="Убрать старые публичные карточки /check")
     @app_commands.default_permissions(administrator=True)
