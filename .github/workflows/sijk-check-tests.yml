@@ -1,7 +1,7 @@
 name: SIJK CHECK smoke tests
 on:
   push:
-    branches: [feature/sijk-check]
+    branches: [main, feature/sijk-check]
   pull_request:
     branches: [main]
 jobs:

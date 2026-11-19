@@ -27,12 +27,21 @@ class TestCheck(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             store = CheckStore(Path(folder) / "test.sqlite3")
             store.configure(1, 100, 101, 102)
+            self.assertIsNone(store.settings(1)["feed_channel_id"])
+            store.set_feed_channel(1, 103)
+            self.assertEqual(store.settings(1)["feed_channel_id"], 103)
             case, result = store.submit(1, 55, "Subset#Aura", "reason", ["https://example.com/1"])
             self.assertEqual(result, "new")
             self.assertEqual(store.submit(1, 55, "subset#aura", "repeat", ["https://example.com/1"])[1], "unchanged")
             self.assertEqual(store.submit(1, 55, "Subset#Aura", "more", ["https://example.com/2"])[1], "supplement")
             self.assertEqual(store.submit(1, 56, "Subset#Aura", "another", ["https://example.com/3"])[1], "new")
             self.assertEqual(store.case(case)[1], 2)
+            with store.connect() as db:
+                db.execute("UPDATE check_cases SET feed_message_id=321 WHERE id=?", (case,))
+                db.commit()
+            store.set_feed_channel(1, 104)
+            self.assertIsNone(store.case(case)[0]["feed_message_id"])
+            self.assertEqual(store.settings(1)["review_channel_id"], 101)
             with store.connect() as db:
                 db.execute("UPDATE check_cases SET state='approved' WHERE id=?", (case,))
                 db.commit()
