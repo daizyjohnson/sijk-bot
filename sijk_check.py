@@ -105,6 +105,8 @@ class CheckStore:
                 db.execute("ALTER TABLE check_settings ADD COLUMN reviewer_role_id INTEGER")
             if "feed_channel_id" not in columns:
                 db.execute("ALTER TABLE check_settings ADD COLUMN feed_channel_id INTEGER")
+            if "feed_panel_message_id" not in columns:
+                db.execute("ALTER TABLE check_settings ADD COLUMN feed_panel_message_id INTEGER")
             case_columns = {row[1] for row in db.execute("PRAGMA table_info(check_cases)")}
             if "feed_message_id" not in case_columns:
                 db.execute("ALTER TABLE check_cases ADD COLUMN feed_message_id INTEGER")
@@ -137,6 +139,7 @@ class CheckStore:
             ).fetchone()
             if previous and previous["feed_channel_id"] != channel_id:
                 db.execute("UPDATE check_cases SET feed_message_id=NULL WHERE guild_id=?", (guild_id,))
+                db.execute("UPDATE check_settings SET feed_panel_message_id=NULL WHERE guild_id=?", (guild_id,))
             db.execute("UPDATE check_settings SET feed_channel_id=? WHERE guild_id=?",
                        (channel_id, guild_id))
             db.commit()
@@ -904,6 +907,79 @@ class SijkCheck(commands.Cog):
             "Старые тестовые заявки автоматически не публикуются. "
             "Убедись, что этот канал открыт для участников.",
             ephemeral=True)
+
+    @app_commands.command(name="check_feed_panel", description="Опубликовать закрепляемую информацию о ленте заявок")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def check_feed_panel(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("Нужны права администратора.", ephemeral=True)
+            return
+        settings = self.store.settings(interaction.guild.id)
+        if not settings or not settings["feed_channel_id"] or not settings["public_channel_id"]:
+            await interaction.response.send_message(
+                "Сначала настрой /check_setup и /check_feed_setup.", ephemeral=True)
+            return
+        if interaction.channel_id != settings["feed_channel_id"]:
+            await interaction.response.send_message(
+                "Используй эту команду в настроенном публичном WINTRADE-REPORTS.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = discord.Embed(
+            title="SIJK CHECK • РЕЕСТР ЗАЯВОК",
+            description=(
+                "Здесь автоматически появляются обращения на проверку игроков VALORANT. "
+                "У каждой заявки отображаются **Riot ID**, **статус** и "
+                "**количество уникальных заявителей**. При новых обращениях "
+                "или решении модерации карточка обновляется.\\n\\n"
+                "**СТАТУСЫ ЗАЯВОК**\\n"
+                "🕒 **На рассмотрении** — проверяющие изучают обращение.\\n"
+                "🔎 **Недостаточно доказательств** — представленных материалов не хватило.\\n"
+                "⛔ **Заявка отклонена** — проверяющие отклонили обращение.\\n"
+                "✅ **Оценка опубликована** — решение внесено в базу SIJK CHECK.\\n"
+                "⏳ **Ожидает публикации оценки** — запись в базу ещё не завершена.\\n\\n"
+                "**КАК ОТПРАВИТЬ ЗАЯВКУ?**\\n"
+                f"Перейди в <#{settings['public_channel_id']}> и нажми **«Подать заявку»**. "
+                "Приложи Riot ID и ссылки на доказательства. "
+                "Рассматриваются игроки от **Расцвета 1 (Ascendant 1)**.\\n\\n"
+                "*Заявка не доказывает нарушение. Личности заявителей и "
+                "доказательства доступны только проверяющим.*"
+            ).replace("\\\\n", "\\n"),
+            color=discord.Color.from_rgb(242, 242, 242),
+        )
+        link = f"https://discord.com/channels/{interaction.guild.id}/{settings['public_channel_id']}"
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            label="Перейти к проверке", style=discord.ButtonStyle.link, url=link, emoji="🔎"))
+        async with self.feed_lock:
+            settings = self.store.settings(interaction.guild.id)
+            message = None
+            try:
+                if settings["feed_panel_message_id"]:
+                    try:
+                        message = await interaction.channel.fetch_message(settings["feed_panel_message_id"])
+                        await message.edit(embed=embed, view=view,
+                                           allowed_mentions=discord.AllowedMentions.none())
+                    except discord.NotFound:
+                        message = None
+                if message is None:
+                    message = await interaction.channel.send(
+                        embed=embed, view=view,
+                        allowed_mentions=discord.AllowedMentions.none())
+                    with closing(self.store.connect()) as db:
+                        db.execute(
+                            "UPDATE check_settings SET feed_panel_message_id=? WHERE guild_id=?",
+                            (message.id, interaction.guild.id))
+                        db.commit()
+            except discord.HTTPException:
+                LOG.exception("Cannot publish SIJK CHECK feed intro")
+                await interaction.followup.send(
+                    "Не удалось опубликовать плашку. Проверь права бота на отправку сообщений "
+                    "и встраивание ссылок.", ephemeral=True)
+                return
+        await interaction.followup.send(
+            "Информационная плашка готова. Закрепи её в канале через меню сообщения. "
+            "Повторный вызов команды обновит ту же плашку.", ephemeral=True)
 
     @app_commands.command(name="check_cleanup", description="Убрать старые публичные карточки /check")
     @app_commands.default_permissions(administrator=True)
