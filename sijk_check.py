@@ -52,6 +52,31 @@ def parse_evidence(text: str) -> list[str]:
     return links
 
 
+PUBLIC_REPORT_STATUSES = {
+    "pending": "🕒 НА РАССМОТРЕНИИ",
+    "approved": "✅ ОЦЕНКА ОПУБЛИКОВАНА",
+    "approved_pending_sync": "⏳ ОЖИДАЕТ ПУБЛИКАЦИИ",
+    "insufficient": "🔎 НЕДОСТАТОЧНО ДОКАЗАТЕЛЬСТВ",
+    "rejected": "⛔ ЗАЯВКА ОТКЛОНЕНА",
+}
+
+
+def public_report_embed(case: sqlite3.Row, reporter_count: int) -> discord.Embed:
+    """Public status only: no reporter names, evidence URLs, or reasons."""
+    status = PUBLIC_REPORT_STATUSES.get(case["state"], "🕒 НА РАССМОТРЕНИИ")
+    embed = discord.Embed(
+        title=discord.utils.escape_markdown(case["riot_id"]),
+        description=(
+            f"## {status}\n\n"
+            f"**Обращение №{case['id']}**  •  **Заявителей: {reporter_count}**\n\n"
+            "*Наличие заявки не доказывает нарушение правил игроком.*"
+        ),
+        color=discord.Color.from_rgb(128, 128, 128),
+    )
+    embed.set_footer(text="SIJK CHECK • Публичный реестр")
+    return embed
+
+
 class CheckStore:
     def __init__(self, path: Path):
         self.path = path
@@ -215,10 +240,11 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
             row, _ = self.cog.store.case(case_id)
             closed = row["state"] not in ("pending", "approved_pending_sync")
             await interaction.response.send_message(
-                "Это дело уже закрыто. Повторная отправка тех же ссылок не создаёт новую заявку. "
-                "Для повторного рассмотрения попроси проверяющего использовать /check_reopen."
-                if closed else
-                "Твоя заявка уже есть. Новых ссылок не обнаружено.",
+                f"**Твоё обращение №{case_id}.** " +
+                ("Дело уже закрыто. Повторная отправка тех же ссылок не создаёт новую заявку. "
+                 "Для повторного рассмотрения попроси проверяющего использовать /check_reopen."
+                 if closed else "Твоя заявка уже есть. Новых ссылок не обнаружено.")
+                + "\nНайти своё обращение можно через кнопку «Мои заявки».",
                 ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -231,6 +257,17 @@ class ReportModal(discord.ui.Modal, title="SIJK CHECK • Заявка"):
             message = ("Заявка сохранена в базе, но карточка не появилась у модераторов. "
                        "Попроси проверяющего выполнить /check_reopen с этим Riot ID. "
                        "Администратор может проверить причину в логах Bothost.")
+        row, _ = self.cog.store.case(case_id)
+        settings = self.cog.store.settings(interaction.guild.id)
+        report_link = (
+            f"https://discord.com/channels/{interaction.guild.id}/"
+            f"{settings['feed_channel_id']}/{row['feed_message_id']}"
+            if settings and settings["feed_channel_id"] and row["feed_message_id"] else None
+        )
+        message += f"\n\n**Номер обращения: №{case_id}.**"
+        if report_link:
+            message += f" [Посмотреть статус в WINTRADE-REPORTS]({report_link})"
+        message += "\nТакже его можно найти через кнопку «Мои заявки»."
         await interaction.followup.send(message, ephemeral=True)
 
 
@@ -295,10 +332,22 @@ class CheckPanel(discord.ui.View):
         if not cases:
             message = "Ты пока не отправлял заявки."
         else:
-            message = "\n\n".join(
-                f"**{discord.utils.escape_markdown(row['riot_id'])}** — {labels.get(row['state'], 'На рассмотрении')}"
-                + (f"\nКомментарий: {discord.utils.escape_mentions(row['reviewer_comment'])[:500]}"
-                   if row["reviewer_comment"] else "") for row in cases)
+            settings = self.cog.store.settings(interaction.guild.id)
+            def describe_case(row):
+                block = (
+                    f"**Обращение №{row['id']}** · "
+                    f"**{discord.utils.escape_markdown(row['riot_id'])}**\n"
+                    f"Статус: **{labels.get(row['state'], 'На рассмотрении')}**"
+                )
+                if settings and settings["feed_channel_id"] and row["feed_message_id"]:
+                    link = (f"https://discord.com/channels/{interaction.guild.id}/"
+                            f"{settings['feed_channel_id']}/{row['feed_message_id']}")
+                    block += f"\n[Открыть карточку в WINTRADE-REPORTS]({link})"
+                if row["reviewer_comment"]:
+                    block += ("\nКомментарий: "
+                              + discord.utils.escape_mentions(row["reviewer_comment"])[:350])
+                return block
+            message = "\n\n".join(describe_case(row) for row in cases)
         await interaction.response.send_message(message[:1900], ephemeral=True)
 
 
@@ -567,23 +616,7 @@ class SijkCheck(commands.Cog):
                       settings["feed_channel_id"], guild.id)
             return False
         row, count = self.store.case(case_id)
-        states = {
-            "pending": "На рассмотрении",
-            "approved": "Оценка опубликована",
-            "approved_pending_sync": "Ожидает публикации оценки",
-            "insufficient": "Недостаточно доказательств",
-            "rejected": "Заявка отклонена",
-        }
-        embed = discord.Embed(
-            title=f"SIJK CHECK • Обращение #{case_id}",
-            description=(
-                f"**Riot ID:** {discord.utils.escape_markdown(row['riot_id'])}\n"
-                f"**Статус:** {states.get(row['state'], 'На рассмотрении')}\n"
-                f"**Уникальных заявителей:** {count}\n\n"
-                "*Подача заявки не доказывает нарушение правил игроком.*"
-            ),
-            color=discord.Color.from_rgb(128, 128, 128),
-        )
+        embed = public_report_embed(row, count)
         async with self.feed_lock:
             # Re-read the message ID to avoid duplicate posts from simultaneous reports.
             row, _ = self.store.case(case_id)
@@ -907,6 +940,35 @@ class SijkCheck(commands.Cog):
             "Старые тестовые заявки автоматически не публикуются. "
             "Убедись, что этот канал открыт для участников.",
             ephemeral=True)
+
+    @app_commands.command(name="check_feed_refresh", description="Обновить формат уже опубликованных заявок")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def check_feed_refresh(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("Нужны права администратора.", ephemeral=True)
+            return
+        settings = self.store.settings(interaction.guild.id)
+        if not settings or interaction.channel_id != settings["feed_channel_id"]:
+            await interaction.response.send_message(
+                "Команду нужно выполнить в настроенном WINTRADE-REPORTS.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        with closing(self.store.connect()) as db:
+            rows = db.execute(
+                "SELECT id FROM check_cases WHERE guild_id=? AND feed_message_id IS NOT NULL "
+                "ORDER BY id DESC LIMIT 100", (interaction.guild.id,)
+            ).fetchall()
+        updated = 0
+        failed = 0
+        for row in rows:
+            if await self.notify_public_report(interaction.guild, row["id"]):
+                updated += 1
+            else:
+                failed += 1
+        await interaction.followup.send(
+            f"Обновлено карточек: {updated}. Ошибок: {failed}. "
+            "Карточки редактируются без повторной публикации.", ephemeral=True)
 
     @app_commands.command(name="check_feed_panel", description="Опубликовать закрепляемую информацию о ленте заявок")
     @app_commands.default_permissions(administrator=True)
