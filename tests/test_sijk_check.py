@@ -39,8 +39,12 @@ class TestCheck(unittest.TestCase):
             with store.connect() as db:
                 db.execute("UPDATE check_cases SET feed_message_id=321 WHERE id=?", (case,))
                 db.commit()
+            with store.connect() as db:
+                db.execute("UPDATE check_settings SET feed_panel_message_id=456 WHERE guild_id=1")
+                db.commit()
             store.set_feed_channel(1, 104)
             self.assertIsNone(store.case(case)[0]["feed_message_id"])
+            self.assertIsNone(store.settings(1)["feed_panel_message_id"])
             self.assertEqual(store.settings(1)["review_channel_id"], 101)
             with store.connect() as db:
                 db.execute("UPDATE check_cases SET state='approved' WHERE id=?", (case,))
